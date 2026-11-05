@@ -19,14 +19,15 @@ type ReadTool struct {
 }
 
 type readArguments struct {
-	Path string `json:"path"`
+	Path   string `json:"path"`
+	Format string `json:"format"`
 }
 
 func (ReadTool) Spec() ToolSpec {
 	return ToolSpec{
 		Name:        "read",
-		Description: "Read a text file or directory from the agent workspace. Use path selectors such as :10-20 or :raw for bounded views.",
-		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"}},"required":["path"]}`),
+		Description: "Read a text file or directory from the agent workspace. Use path selectors such as :10-20 or :raw; format hashline returns content-hash anchors for edit.",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"format":{"type":"string","enum":["numbered","hashline"]}},"required":["path"]}`),
 		Policy: ToolPolicy{
 			Tier:        TierRead,
 			Timeout:     30 * time.Second,
@@ -43,6 +44,12 @@ func decodeReadArguments(raw json.RawMessage) (any, error) {
 	}
 	if strings.TrimSpace(arguments.Path) == "" {
 		return nil, fmt.Errorf("tools: read path is required")
+	}
+	if arguments.Format == "" {
+		arguments.Format = "numbered"
+	}
+	if arguments.Format != "numbered" && arguments.Format != "hashline" {
+		return nil, fmt.Errorf("tools: unsupported read format %q", arguments.Format)
 	}
 	return arguments, nil
 }
@@ -130,9 +137,16 @@ func (tool ReadTool) Execute(ctx context.Context, execution ExecutionContext, ar
 		} else {
 			selected = nil
 		}
-		parts := make([]string, 0, len(selected))
+		parts := make([]string, 0, len(selected)+1)
+		if args.Format == "hashline" {
+			parts = append(parts, fmt.Sprintf("[%s#%s]", resolved.Relative, hashlineTag(text)))
+		}
 		for index, line := range selected {
-			parts = append(parts, fmt.Sprintf("%d\t%s", start+index, line))
+			if args.Format == "hashline" {
+				parts = append(parts, fmt.Sprintf("%d:%s", start+index, line))
+			} else {
+				parts = append(parts, fmt.Sprintf("%d\t%s", start+index, line))
+			}
 		}
 		output = strings.Join(parts, "\n")
 	}

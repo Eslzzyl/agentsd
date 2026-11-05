@@ -14,21 +14,38 @@ type EditTool struct {
 }
 
 type editArguments struct {
-	Path           string  `json:"path"`
-	Operation      string  `json:"operation"`
-	OldString      *string `json:"old_string"`
-	NewString      *string `json:"new_string"`
-	ReplaceAll     bool    `json:"replace_all"`
-	Content        *string `json:"content"`
-	RenameTo       string  `json:"rename_to"`
-	ExpectedSHA256 string  `json:"expected_sha256"`
+	Path           string           `json:"path"`
+	Mode           string           `json:"mode"`
+	Operation      string           `json:"operation"`
+	OldString      *string          `json:"old_string"`
+	NewString      *string          `json:"new_string"`
+	ReplaceAll     bool             `json:"replace_all"`
+	Content        *string          `json:"content"`
+	RenameTo       string           `json:"rename_to"`
+	ExpectedSHA256 string           `json:"expected_sha256"`
+	Input          string           `json:"input"`
+	Edits          []patchEditEntry `json:"edits"`
+}
+
+func (arguments editArguments) mode() string {
+	if arguments.Mode == "" {
+		return "replace"
+	}
+	return arguments.Mode
+}
+
+func (arguments editArguments) operation() string {
+	if arguments.Operation == "" {
+		return "replace"
+	}
+	return arguments.Operation
 }
 
 func (EditTool) Spec() ToolSpec {
 	return ToolSpec{
 		Name:        "edit",
-		Description: "Replace text or create, delete, and rename files in the agent workspace with snapshot checks.",
-		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"operation":{"type":"string","enum":["replace","create","delete","rename"]},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"content":{"type":"string"},"rename_to":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path"]}`),
+		Description: "Edit workspace files using exact replacement, structured patch, or hashline anchors.",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"path":{"type":"string"},"mode":{"type":"string","enum":["replace","patch","hashline"]},"operation":{"type":"string","enum":["replace","create","delete","rename"]},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"content":{"type":"string"},"rename_to":{"type":"string"},"expected_sha256":{"type":"string"},"input":{"type":"string"},"edits":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"op":{"type":"string","enum":["create","delete","update"]},"rename":{"type":"string"},"diff":{"type":"string"}}}}}}`),
 		Policy: ToolPolicy{
 			Tier:          TierWrite,
 			Timeout:       30 * time.Second,
@@ -44,32 +61,49 @@ func decodeEditArguments(raw json.RawMessage) (any, error) {
 	if err := decodeJSON(raw, &arguments); err != nil {
 		return nil, fmt.Errorf("tools: decode edit arguments: %w", err)
 	}
-	if strings.TrimSpace(arguments.Path) == "" {
-		return nil, fmt.Errorf("tools: edit path is required")
-	}
-	if arguments.Operation == "" {
-		arguments.Operation = "replace"
-	}
-	switch arguments.Operation {
+	switch arguments.mode() {
 	case "replace":
-		if arguments.OldString == nil || arguments.NewString == nil {
-			return nil, fmt.Errorf("tools: replace requires old_string and new_string")
+		if strings.TrimSpace(arguments.Path) == "" {
+			return nil, fmt.Errorf("tools: edit path is required")
 		}
-		if *arguments.OldString == "" {
-			return nil, fmt.Errorf("tools: old_string cannot be empty")
+		if arguments.Operation == "" {
+			arguments.Operation = "replace"
 		}
-	case "create":
-		if arguments.Content == nil {
-			return nil, fmt.Errorf("tools: create requires content")
+		switch arguments.Operation {
+		case "replace":
+			if arguments.OldString == nil || arguments.NewString == nil {
+				return nil, fmt.Errorf("tools: replace requires old_string and new_string")
+			}
+			if *arguments.OldString == "" {
+				return nil, fmt.Errorf("tools: old_string cannot be empty")
+			}
+		case "create":
+			if arguments.Content == nil {
+				return nil, fmt.Errorf("tools: create requires content")
+			}
+		case "delete":
+		case "rename":
+			if strings.TrimSpace(arguments.RenameTo) == "" {
+				return nil, fmt.Errorf("tools: rename requires rename_to")
+			}
+		default:
+			return nil, fmt.Errorf("tools: unsupported edit operation %q", arguments.Operation)
 		}
-	case "delete":
-	case "rename":
-		if strings.TrimSpace(arguments.RenameTo) == "" {
-			return nil, fmt.Errorf("tools: rename requires rename_to")
+	case "patch":
+		if strings.TrimSpace(arguments.Path) == "" {
+			return nil, fmt.Errorf("tools: patch path is required")
+		}
+		if len(arguments.Edits) == 0 {
+			return nil, fmt.Errorf("tools: patch requires edits")
+		}
+	case "hashline":
+		if strings.TrimSpace(arguments.Input) == "" {
+			return nil, fmt.Errorf("tools: hashline requires input")
 		}
 	default:
-		return nil, fmt.Errorf("tools: unsupported edit operation %q", arguments.Operation)
+		return nil, fmt.Errorf("tools: unsupported edit mode %q", arguments.Mode)
 	}
+	arguments.Mode = arguments.mode()
 	return arguments, nil
 }
 
@@ -81,6 +115,12 @@ func (tool EditTool) Execute(ctx context.Context, execution ExecutionContext, ar
 	if err := ctx.Err(); err != nil {
 		return ToolResult{}, err
 	}
+	if args.mode() == "patch" {
+		return tool.applyPatch(ctx, execution, args)
+	}
+	if args.mode() == "hashline" {
+		return tool.applyHashline(ctx, execution, args)
+	}
 	workspace, err := resolveToolWorkspace(tool.Workspace, execution.Session)
 	if err != nil {
 		return ToolResult{}, err
@@ -89,7 +129,7 @@ func (tool EditTool) Execute(ctx context.Context, execution ExecutionContext, ar
 	if err != nil {
 		return ToolResult{}, err
 	}
-	switch args.Operation {
+	switch args.operation() {
 	case "create":
 		return tool.create(ctx, resolved, args)
 	case "delete":

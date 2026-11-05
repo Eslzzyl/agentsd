@@ -1,8 +1,8 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +72,10 @@ func TestReadGlobGrepAndFindTools(t *testing.T) {
 	if !strings.Contains(readResult.Content, "2\tneedle first") || !strings.Contains(readResult.Content, "3\ttoken exchange") {
 		t.Fatalf("read result = %q", readResult.Content)
 	}
+	hashlineResult := executeFileTool(t, ReadTool{Workspace: workspace, Limiter: limiter}, `{"path":"main.go","format":"hashline"}`)
+	if !strings.Contains(hashlineResult.Content, "[main.go#") || !strings.Contains(hashlineResult.Content, "2:needle first") {
+		t.Fatalf("hashline read result = %q", hashlineResult.Content)
+	}
 
 	globResult := executeFileTool(t, GlobTool{Workspace: workspace, Limiter: limiter}, `{"path":"**/*.go"}`)
 	if !strings.Contains(globResult.Content, "main.go") || !strings.Contains(globResult.Content, "sub/helper.go") || strings.Contains(globResult.Content, ".hidden.go") {
@@ -128,6 +132,57 @@ func TestWriteAndEditToolsUseSnapshots(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "renamed.txt")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEditPatchMode(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("def greet():\n    print('Hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"mode":"patch","path":"app.py","edits":[{"op":"update","diff":"@@ def greet():\n def greet():\n-    print('Hi')\n+    print('Hello')\n"}]}`
+	result := executeFileTool(t, EditTool{Workspace: workspace}, payload)
+	if !strings.Contains(result.Content, "patched app.py") {
+		t.Fatalf("patch result = %q", result.Content)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "app.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "def greet():\n    print('Hello')\n" {
+		t.Fatalf("patched file = %q", data)
+	}
+}
+
+func TestEditHashlineModeValidatesTagAndAppliesAnchors(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "notes.txt")
+	original := "one\ntwo\nthree\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	input := fmt.Sprintf("[%s#%s]\nPUT 2.=2:\n+TWO\n", "notes.txt", hashlineTag(original))
+	result := executeFileTool(t, EditTool{Workspace: workspace}, fmt.Sprintf(`{"mode":"hashline","input":%q}`, input))
+	if !strings.Contains(result.Content, "updated notes.txt") {
+		t.Fatalf("hashline result = %q", result.Content)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "one\nTWO\nthree\n" {
+		t.Fatalf("hashline file = %q", data)
+	}
+	if _, err := executeFileToolResult(EditTool{Workspace: workspace}, `{"mode":"hashline","input":"[notes.txt#0000]\nPUT 1.=1:\n+bad\n"}`); err == nil {
+		t.Fatal("stale hashline tag was accepted")
 	}
 }
 
