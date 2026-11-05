@@ -269,3 +269,33 @@ func TestCompleteRejectsUnsupportedImageBytes(t *testing.T) {
 		t.Fatalf("error = %v, want unsupported image type", err)
 	}
 }
+
+func TestCompleteMergesThinkingIntoChatRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if body["model"] != "gpt-test" || body["reasoning_effort"] != "high" || body["custom_flag"] != true {
+			t.Errorf("request body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chat-1","model":"gpt-test","choices":[]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{BaseURL: server.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Complete(context.Background(), llm.Request{
+		Model:         "gpt-test",
+		ThinkingLevel: llm.GPT5(llm.GPT5High),
+		ExtraBody:     map[string]any{"custom_flag": true, "reasoning_effort": "low"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

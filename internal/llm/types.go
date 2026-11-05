@@ -32,14 +32,16 @@ const (
 )
 
 type Request struct {
-	Model       string
-	Messages    []Message
-	Tools       []Tool
-	ToolChoice  *ToolChoice
-	Temperature *float64
-	TopP        *float64
-	MaxTokens   *int
-	Stop        []string
+	Model         string
+	Messages      []Message
+	Tools         []Tool
+	ToolChoice    *ToolChoice
+	Temperature   *float64
+	TopP          *float64
+	MaxTokens     *int
+	Stop          []string
+	ThinkingLevel ThinkingLevelType
+	ExtraBody     map[string]any
 }
 
 type ToolChoice struct {

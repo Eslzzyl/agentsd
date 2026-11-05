@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -22,6 +23,27 @@ type chatRequest struct {
 	Stop                []string           `json:"stop,omitempty"`
 	Stream              bool               `json:"stream,omitempty"`
 	StreamOptions       *chatStreamOptions `json:"stream_options,omitempty"`
+	ExtraBody           map[string]any     `json:"-"`
+}
+
+func (request chatRequest) MarshalJSON() ([]byte, error) {
+	type plainChatRequest chatRequest
+	encoded, err := json.Marshal(plainChatRequest(request))
+	if err != nil || len(request.ExtraBody) == 0 {
+		return encoded, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, fmt.Errorf("openai: decode request fields: %w", err)
+	}
+	for key, value := range request.ExtraBody {
+		encodedValue, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("openai: encode extra field %q: %w", key, err)
+		}
+		fields[key] = encodedValue
+	}
+	return json.Marshal(fields)
 }
 
 type chatStreamOptions struct {
@@ -162,6 +184,7 @@ func toChatRequest(req llm.Request, stream bool) (chatRequest, error) {
 			ToolCalls:  message.ToolCalls,
 		})
 	}
+	thinkingBody, _ := req.ThinkingLevel.ExtraBodyForAPI(llm.APITypeOpenAI)
 	result := chatRequest{
 		Model:               req.Model,
 		Messages:            messages,
@@ -172,6 +195,7 @@ func toChatRequest(req llm.Request, stream bool) (chatRequest, error) {
 		MaxCompletionTokens: req.MaxTokens,
 		Stop:                req.Stop,
 		Stream:              stream,
+		ExtraBody:           llm.MergeExtraBody(req.ExtraBody, thinkingBody),
 	}
 	if stream {
 		result.StreamOptions = &chatStreamOptions{IncludeUsage: true}
