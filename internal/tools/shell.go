@@ -10,8 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-
-	"agentsd/internal/llm"
+	"time"
 )
 
 const DefaultShellMaxOutputBytes = 1 << 20
@@ -34,29 +33,44 @@ type shellResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-func (ShellTool) Definition() llm.Tool {
-	return llm.Tool{
-		Type: "function",
-		Function: llm.FunctionDefinition{
-			Name:        "shell",
-			Description: "Execute a shell command in the agent workspace.",
-			Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"]}`),
+func (ShellTool) Spec() ToolSpec {
+	return ToolSpec{
+		Name:        "shell",
+		Description: "Execute a shell command in the agent workspace.",
+		Parameters:  json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"]}`),
+		Policy: ToolPolicy{
+			Tier:          TierExec,
+			Timeout:       5 * time.Minute,
+			Concurrency:   ConcurrencyExclusive,
+			Interruptible: true,
+		},
+		Decode: func(arguments json.RawMessage) (any, error) {
+			return decodeShellArguments(arguments)
 		},
 	}
 }
 
-func (tool ShellTool) Execute(ctx context.Context, arguments json.RawMessage) (string, error) {
-	args, err := decodeShellArguments(arguments)
-	if err != nil {
-		return "", err
+func (tool ShellTool) Execute(ctx context.Context, execution ExecutionContext, arguments any) (ToolResult, error) {
+	args, ok := arguments.(shellArguments)
+	if !ok {
+		return ToolResult{}, fmt.Errorf("tools: shell arguments have type %T", arguments)
 	}
 	if args.Command == "" {
-		return "", fmt.Errorf("tools: shell command is required")
+		return ToolResult{}, fmt.Errorf("tools: shell command is required")
 	}
 
+	startedAt := time.Now()
 	command := shellCommand(ctx, args.Command)
 	if tool.WorkingDir != "" {
 		command.Dir = tool.WorkingDir
+	} else if execution.Session.CWD != "" {
+		command.Dir = execution.Session.CWD
+	}
+	if len(execution.Session.Env) > 0 {
+		command.Env = os.Environ()
+		for key, value := range execution.Session.Env {
+			command.Env = append(command.Env, key+"="+value)
+		}
 	}
 	stdout := &limitedBuffer{limit: tool.outputLimit()}
 	stderr := &limitedBuffer{limit: tool.outputLimit()}
@@ -65,7 +79,7 @@ func (tool ShellTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 
 	runErr := command.Run()
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return "", ctxErr
+		return ToolResult{}, ctxErr
 	}
 
 	result := shellResult{
@@ -87,9 +101,18 @@ func (tool ShellTool) Execute(ctx context.Context, arguments json.RawMessage) (s
 
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return "", fmt.Errorf("tools: encode shell result: %w", err)
+		return ToolResult{}, fmt.Errorf("tools: encode shell result: %w", err)
 	}
-	return string(encoded), nil
+	return ToolResult{
+		Content: string(encoded),
+		Details: result,
+		IsError: runErr != nil,
+		Metadata: ResultMetadata{
+			Duration:    time.Since(startedAt),
+			OutputBytes: len(result.Stdout) + len(result.Stderr),
+			Truncated:   result.Truncated,
+		},
+	}, nil
 }
 
 func decodeShellArguments(arguments json.RawMessage) (shellArguments, error) {

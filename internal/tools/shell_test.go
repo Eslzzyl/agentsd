@@ -14,16 +14,19 @@ func TestShellToolReturnsOutputAndExitCode(t *testing.T) {
 		command = "echo shell-test"
 	}
 	tool := ShellTool{MaxOutputBytes: 64}
-	content, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"`+command+`"}`))
+	result, err := executeShellForTest(tool, command)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result shellResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	var decoded shellResult
+	if err := json.Unmarshal([]byte(result.Content), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !result.OK || result.ExitCode != 0 || !strings.Contains(result.Stdout, "shell-test") {
-		t.Fatalf("result = %#v", result)
+	if !decoded.OK || decoded.ExitCode != 0 || !strings.Contains(decoded.Stdout, "shell-test") {
+		t.Fatalf("result = %#v", decoded)
+	}
+	if result.Details == nil || result.Metadata.OutputBytes == 0 {
+		t.Fatalf("metadata = %#v", result)
 	}
 }
 
@@ -32,15 +35,23 @@ func TestShellToolReturnsNonZeroExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		command = "exit /B 7"
 	}
-	content, err := (ShellTool{}).Execute(context.Background(), json.RawMessage(`{"command":"`+command+`"}`))
+	result, err := executeShellForTest(ShellTool{}, command)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result shellResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	var decoded shellResult
+	if err := json.Unmarshal([]byte(result.Content), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if result.OK || result.ExitCode != 7 {
+	if decoded.OK || decoded.ExitCode != 7 || !result.IsError {
 		t.Fatalf("result = %#v", result)
 	}
+}
+
+func executeShellForTest(tool ShellTool, command string) (ToolResult, error) {
+	arguments, err := tool.Spec().Decode(json.RawMessage(`{"command":"` + command + `"}`))
+	if err != nil {
+		return ToolResult{}, err
+	}
+	return tool.Execute(context.Background(), ExecutionContext{}, arguments)
 }

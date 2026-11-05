@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"agentsd/internal/llm"
 	"agentsd/internal/tools"
@@ -35,12 +36,53 @@ type fixedTool struct {
 	name       string
 	definition llm.Tool
 	result     string
+	policy     tools.ToolPolicy
+	delay      time.Duration
+	update     bool
+	entered    chan<- struct{}
+	release    <-chan struct{}
 }
 
-func (tool fixedTool) Definition() llm.Tool { return tool.definition }
+func (tool fixedTool) Spec() tools.ToolSpec {
+	return tools.ToolSpec{
+		Name:        tool.name,
+		Description: tool.definition.Function.Description,
+		Parameters:  tool.definition.Function.Parameters,
+		Policy:      tool.policy,
+		Decode: func(arguments json.RawMessage) (any, error) {
+			var value any
+			if err := json.Unmarshal(arguments, &value); err != nil {
+				return nil, err
+			}
+			return value, nil
+		},
+	}
+}
 
-func (tool fixedTool) Execute(context.Context, json.RawMessage) (string, error) {
-	return tool.result, nil
+func (tool fixedTool) Execute(ctx context.Context, execution tools.ExecutionContext, _ any) (tools.ToolResult, error) {
+	if tool.entered != nil {
+		tool.entered <- struct{}{}
+	}
+	if tool.release != nil {
+		select {
+		case <-tool.release:
+		case <-ctx.Done():
+			return tools.ToolResult{}, ctx.Err()
+		}
+	}
+	if tool.delay > 0 {
+		timer := time.NewTimer(tool.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return tools.ToolResult{}, ctx.Err()
+		}
+	}
+	if tool.update && execution.Update != nil {
+		execution.Update(tools.ToolResult{Content: "progress"})
+	}
+	return tools.ToolResult{Content: tool.result}, nil
 }
 
 func TestRuntimeRunsToolCallsUntilFinalMessage(t *testing.T) {
@@ -61,8 +103,9 @@ func TestRuntimeRunsToolCallsUntilFinalMessage(t *testing.T) {
 	lookup, err := tools.NewRegistry(fixedTool{
 		name: "lookup",
 		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
-			Name:       "lookup",
-			Parameters: json.RawMessage(`{"type":"object"}`),
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
 		}},
 		result: `{"ok":true}`,
 	})
@@ -162,5 +205,124 @@ func TestRuntimeDefaultMaxTurnsIsUnlimited(t *testing.T) {
 	}
 	if result.Turns != toolTurns+1 || result.FinalMessage.Content != "done" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+func TestRuntimeEmitsToolLifecycle(t *testing.T) {
+	client := &scriptedClient{responses: []llm.Response{
+		{Choices: []llm.Choice{{Message: llm.Message{
+			ToolCalls: []llm.ToolCall{{ID: "call-1", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}}},
+		}}}},
+		{Choices: []llm.Choice{{Message: llm.Message{Content: "done"}}}},
+	}}
+	eventTypes := make([]tools.EventType, 0, 3)
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result: "ok",
+		update: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{
+		EventSink: func(event tools.Event) {
+			eventTypes = append(eventTypes, event.Type)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{Model: "test-model"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []tools.EventType{tools.EventToolStarted, tools.EventToolUpdated, tools.EventToolCompleted}
+	if fmt.Sprint(eventTypes) != fmt.Sprint(want) {
+		t.Fatalf("event types = %v, want %v", eventTypes, want)
+	}
+}
+
+func TestRuntimeRunsSharedToolCallsConcurrently(t *testing.T) {
+	client := &scriptedClient{responses: []llm.Response{
+		{Choices: []llm.Choice{{Message: llm.Message{
+			ToolCalls: []llm.ToolCall{
+				{ID: "call-1", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}},
+				{ID: "call-2", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}},
+			},
+		}}}},
+		{Choices: []llm.Choice{{Message: llm.Message{Content: "done"}}}},
+	}}
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result:  "ok",
+		entered: entered,
+		release: release,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := runtime.Run(context.Background(), RunRequest{Model: "test-model"})
+		runDone <- runErr
+	}()
+	for index := 0; index < 2; index++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("shared calls did not start together")
+		}
+	}
+	close(release)
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeTurnsToolTimeoutIntoToolResult(t *testing.T) {
+	client := &scriptedClient{responses: []llm.Response{
+		{Choices: []llm.Choice{{Message: llm.Message{
+			ToolCalls: []llm.ToolCall{{ID: "call-1", Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`}}},
+		}}}},
+		{Choices: []llm.Choice{{Message: llm.Message{Content: "done"}}}},
+	}}
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result: "late",
+		delay:  time.Second,
+		policy: tools.ToolPolicy{Timeout: 10 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Messages[1].Content, "timed out") {
+		t.Fatalf("tool message = %q", result.Messages[1].Content)
 	}
 }
