@@ -196,7 +196,8 @@ agents show <event-id>
 3. **工具执行系统**：实现本地 Shell 执行与基础文件读写工具。
 4. **Agent Loop 核心**：实现 `LLM -> Tool -> LLM` 自主循环。
 5. **工具系统基础能力**：建立 `ToolSpec`、`ToolPolicy`、`ToolResult`、`SessionContext`、`ToolFactory`、hidden/启用列表、生命周期事件、参数校验、timeout、取消、进度更新与批量调用调度。
-6. **事件持久化**：每一步操作追加写入本地 `events.jsonl`。
+6. **文件工具基础能力与第一批工具**：建立 Workspace、路径解析、输出限制、artifact、文件快照，并接入 `read`、`glob`、`grep`、`find`、`write`、`edit`、`shell`。
+7. **事件持久化**：每一步操作追加写入本地 `events.jsonl`。
 
 ### 阶段二：轻量 Daemon 宿主与 UDS IPC
 在核心 Runtime 稳定后，将其托管至后台服务：

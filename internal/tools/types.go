@@ -69,10 +69,11 @@ func (spec ToolSpec) Definition() llm.Tool {
 
 // SessionContext carries runtime-owned state into a tool call.
 type SessionContext struct {
-	ID     string
-	CWD    string
-	Env    map[string]string
-	Values map[string]any
+	ID            string
+	CWD           string
+	WorkspaceRoot string
+	Env           map[string]string
+	Values        map[string]any
 }
 
 // Call identifies one model-requested tool invocation.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"agentsd/internal/agent"
 	"agentsd/internal/config"
@@ -47,7 +48,25 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("daemon: determine working directory: %w", err)
 	}
-	registry, err := tools.NewRegistry(tools.ShellTool{WorkingDir: workingDir})
+	workspace, err := tools.NewWorkspace(workingDir)
+	if err != nil {
+		return nil, "", err
+	}
+	artifactRoot := filepath.Join(filepath.Dir(factory.ConfigPath), "artifacts")
+	artifactStore, err := tools.NewArtifactStore(artifactRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	limiter := tools.OutputLimiter{Store: artifactStore}
+	registry, err := tools.NewRegistry(
+		tools.ReadTool{Workspace: workspace, Limiter: limiter},
+		tools.GlobTool{Workspace: workspace, Limiter: limiter},
+		tools.GrepTool{Workspace: workspace, Limiter: limiter},
+		tools.FindTool{Workspace: workspace, Limiter: limiter},
+		tools.WriteTool{Workspace: workspace},
+		tools.EditTool{Workspace: workspace},
+		tools.ShellTool{WorkingDir: workspace.Root, MaxOutputBytes: tools.DefaultShellMaxOutputBytes},
+	)
 	if err != nil {
 		return nil, "", err
 	}
@@ -56,7 +75,9 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 	if maxTokens > 0 {
 		maxTokensPtr = &maxTokens
 	}
-	runtime, err := agent.NewRuntime(client, registry, agent.RuntimeOptions{})
+	runtime, err := agent.NewRuntime(client, registry, agent.RuntimeOptions{
+		Session: tools.SessionContext{CWD: workspace.Root, WorkspaceRoot: workspace.Root},
+	})
 	if err != nil {
 		return nil, "", err
 	}
