@@ -17,19 +17,23 @@ var ErrMaxTurns = errors.New("agent: maximum turns reached")
 
 type RuntimeOptions struct {
 	// MaxTurns == 0 enables an unlimited loop. A positive value enables a turn limit.
-	MaxTurns       int
-	EventSink      tools.EventSink
-	Session        tools.SessionContext
-	MaxToolTimeout time.Duration
+	MaxTurns         int
+	EventSink        tools.EventSink
+	ContextWindow    int
+	ContextEventSink ContextEventSink
+	Session          tools.SessionContext
+	MaxToolTimeout   time.Duration
 }
 
 type Runtime struct {
-	client         llm.Client
-	tools          tools.Registry
-	maxTurns       int
-	eventSink      tools.EventSink
-	session        tools.SessionContext
-	maxToolTimeout time.Duration
+	client           llm.Client
+	tools            tools.Registry
+	maxTurns         int
+	eventSink        tools.EventSink
+	contextWindow    int
+	contextEventSink ContextEventSink
+	session          tools.SessionContext
+	maxToolTimeout   time.Duration
 }
 
 func NewRuntime(client llm.Client, registry tools.Registry, options RuntimeOptions) (*Runtime, error) {
@@ -43,22 +47,25 @@ func NewRuntime(client llm.Client, registry tools.Registry, options RuntimeOptio
 		return nil, fmt.Errorf("agent: max tool timeout cannot be negative")
 	}
 	return &Runtime{
-		client:         client,
-		tools:          registry,
-		maxTurns:       options.MaxTurns,
-		eventSink:      options.EventSink,
-		session:        options.Session,
-		maxToolTimeout: options.MaxToolTimeout,
+		client:           client,
+		tools:            registry,
+		maxTurns:         options.MaxTurns,
+		eventSink:        options.EventSink,
+		contextWindow:    options.ContextWindow,
+		contextEventSink: options.ContextEventSink,
+		session:          options.Session,
+		maxToolTimeout:   options.MaxToolTimeout,
 	}, nil
 }
 
 type RunRequest struct {
-	Model     string
-	Messages  []llm.Message
-	MaxTokens *int
-	ExtraBody map[string]any
-	Session   *tools.SessionContext
-	EventSink tools.EventSink
+	Model            string
+	Messages         []llm.Message
+	MaxTokens        *int
+	ExtraBody        map[string]any
+	Session          *tools.SessionContext
+	EventSink        tools.EventSink
+	ContextEventSink ContextEventSink
 }
 
 type RunResult struct {
@@ -76,46 +83,56 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	if request.Session != nil {
 		session = *request.Session
 	}
-	messages := append([]llm.Message(nil), request.Messages...)
 	definitions := runtime.tools.Definitions()
 	eventSink := runtime.eventSink
 	if request.EventSink != nil {
 		eventSink = request.EventSink
 	}
+	contextEventSink := runtime.contextEventSink
+	if request.ContextEventSink != nil {
+		contextEventSink = request.ContextEventSink
+	}
+	contextState := newContextState(runtime.client, request, runtime.contextWindow)
+	contextState.eventSink = contextEventSink
+	defer contextState.close()
 	events := newEventEmitter(eventSink)
 	for turn := 1; ; turn++ {
 		if runtime.maxTurns > 0 && turn > runtime.maxTurns {
-			return RunResult{Messages: messages, Turns: turn - 1}, ErrMaxTurns
+			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, ErrMaxTurns
+		}
+		if err := contextState.prepare(ctx); err != nil {
+			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
 		}
 		response, err := runtime.client.Complete(ctx, llm.Request{
 			Model:     modelName(request.Model),
-			Messages:  messages,
+			Messages:  contextState.messages(),
 			Tools:     definitions,
 			MaxTokens: request.MaxTokens,
 			ExtraBody: request.ExtraBody,
 		})
 		if err != nil {
-			return RunResult{Messages: messages, Turns: turn - 1}, err
+			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
 		}
+		contextState.observe(response.Usage)
 		if len(response.Choices) == 0 {
-			return RunResult{Messages: messages, Turns: turn}, fmt.Errorf("agent: model response has no choices")
+			return RunResult{Messages: contextState.messages(), Turns: turn}, fmt.Errorf("agent: model response has no choices")
 		}
 
 		assistant := response.Choices[0].Message
 		if assistant.Role == "" {
 			assistant.Role = llm.RoleAssistant
 		}
-		messages = append(messages, assistant)
-		result := RunResult{FinalMessage: assistant, Messages: messages, Turns: turn}
+		contextState.append(assistant)
+		result := RunResult{FinalMessage: assistant, Messages: contextState.messages(), Turns: turn}
 		if len(assistant.ToolCalls) == 0 {
 			return result, nil
 		}
 
 		toolMessages, err := runtime.executeToolBatch(ctx, turn, assistant.ToolCalls, session, events)
 		if err != nil {
-			return RunResult{Messages: messages, Turns: turn}, err
+			return RunResult{Messages: contextState.messages(), Turns: turn}, err
 		}
-		messages = append(messages, toolMessages...)
+		contextState.appendAll(toolMessages)
 	}
 }
 

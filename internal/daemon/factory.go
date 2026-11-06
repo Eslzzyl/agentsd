@@ -76,7 +76,8 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 		maxTokensPtr = &maxTokens
 	}
 	runtime, err := agent.NewRuntime(client, registry, agent.RuntimeOptions{
-		Session: tools.SessionContext{CWD: workspace.Root, WorkspaceRoot: workspace.Root},
+		ContextWindow: resolved.ContextWindow,
+		Session:       tools.SessionContext{CWD: workspace.Root, WorkspaceRoot: workspace.Root},
 	})
 	if err != nil {
 		return nil, "", err

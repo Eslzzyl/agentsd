@@ -274,6 +274,13 @@ func (manager *Manager) run(ctx context.Context, record *managedAgent, runner Ru
 				manager.mu.Unlock()
 			}
 		},
+		ContextEventSink: func(event agent.ContextEvent) {
+			if err := manager.appendEvent(record, contextEventToSession(event)); err != nil {
+				manager.mu.Lock()
+				record.persistenceErr = err
+				manager.mu.Unlock()
+			}
+		},
 	})
 	finishedAt := time.Now().UTC()
 
@@ -358,6 +365,16 @@ func eventToSession(event tools.Event) session.Event {
 		data["error"] = event.Error
 	}
 	return session.Event{Type: string(event.Type), Timestamp: timestamp, Data: data}
+}
+
+func contextEventToSession(event agent.ContextEvent) session.Event {
+	return session.NewEvent(session.EventContextCompacted, map[string]any{
+		"summary":           event.Summary,
+		"tokens_before":     event.TokensBefore,
+		"removed_messages":  event.RemovedMessages,
+		"kept_messages":     event.KeptMessages,
+		"compaction_number": event.CompactionNumber,
+	})
 }
 
 func (manager *Manager) List() []AgentSummary {

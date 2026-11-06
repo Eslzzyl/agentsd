@@ -111,8 +111,12 @@ func (cfg Config) Validate() error {
 	if !ok {
 		return fmt.Errorf("config: selected provider %q is not defined", cfg.Provider)
 	}
-	if _, ok := provider.Models[cfg.Model]; !ok {
+	selectedModel, ok := provider.Models[cfg.Model]
+	if !ok {
 		return fmt.Errorf("config: selected model %q is not defined for provider %q", cfg.Model, cfg.Provider)
+	}
+	if selectedModel.ContextWindow <= 0 {
+		return fmt.Errorf("config: selected model %q must define a positive context_window", cfg.Model)
 	}
 	return nil
 }

@@ -66,6 +66,7 @@ api_type = "openai"
 base_url = "https://api.example.test/v1"
 
 [providers.hosted.models.qwen-3-8-max]
+context_window = 128000
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +128,9 @@ thinking_level = "gpt5:high"
 [providers.hosted]
 api_type = "openai"
 base_url = "https://api.example.test/v1"
+
+[providers.hosted.models."gpt-5.6"]
+context_window = 128000
 
 [providers.hosted.models."gpt-5.6".extra_body]
 custom_flag = true

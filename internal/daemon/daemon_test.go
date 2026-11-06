@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,21 @@ func (runner testRunner) Run(ctx context.Context, request agent.RunRequest) (age
 	if runner.wait {
 		<-ctx.Done()
 		return agent.RunResult{}, ctx.Err()
+	}
+	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
+}
+
+type contextEventRunner struct{}
+
+func (contextEventRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	if request.ContextEventSink != nil {
+		request.ContextEventSink(agent.ContextEvent{
+			Summary:          "summary",
+			TokensBefore:     100,
+			RemovedMessages:  2,
+			KeptMessages:     3,
+			CompactionNumber: 1,
+		})
 	}
 	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
 }
@@ -190,6 +207,48 @@ func TestManagerPersistsNamespacesAndReloadsSessions(t *testing.T) {
 	}
 	if recovered.Status != "completed" || recovered.Final != "done" {
 		t.Fatalf("recovered = %#v", recovered)
+	}
+}
+func TestManagerPersistsContextCompactionEvent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return contextEventRunner{}, "test-model", nil
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned, err := manager.SpawnInNamespace("compaction", "", "persist compaction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		inspected, inspectErr := manager.InspectInNamespace("compaction", spawned.ID[:8])
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		if inspected.Status == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent did not complete: %#v", inspected)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	path, err := store.SessionPath("compaction", spawned.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"type":"context.compacted"`) || !strings.Contains(text, `"compaction_number":1`) {
+		t.Fatalf("session log = %s", text)
 	}
 }
 
