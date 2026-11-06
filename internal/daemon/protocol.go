@@ -49,6 +49,10 @@ func Call(ctx context.Context, socketPath string, request Request) (json.RawMess
 	return response.Result, nil
 }
 
+func WebSocketSocketPath(socketPath string) string {
+	return socketPath + ".ws"
+}
+
 func ListenUnix(socketPath string) (net.Listener, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("daemon: socket path is required")

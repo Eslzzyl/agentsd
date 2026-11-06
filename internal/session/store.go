@@ -53,7 +53,17 @@ type Event struct {
 }
 
 func NewEvent(eventType string, data map[string]any) Event {
-	return Event{Type: eventType, Data: data}
+	return PrepareEvent(Event{Type: eventType, Data: data})
+}
+
+func PrepareEvent(event Event) Event {
+	if event.ID == "" {
+		event.ID = shortID()
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	return event
 }
 
 func (event Event) MarshalJSON() ([]byte, error) {
@@ -71,6 +81,39 @@ func (event Event) MarshalJSON() ([]byte, error) {
 		fields["timestamp"] = event.Timestamp
 	}
 	return json.Marshal(fields)
+}
+
+func (event *Event) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var decoded Event
+	decoded.Data = make(map[string]any, len(fields))
+	for key, raw := range fields {
+		switch key {
+		case "type":
+			if err := json.Unmarshal(raw, &decoded.Type); err != nil {
+				return err
+			}
+		case "id":
+			if err := json.Unmarshal(raw, &decoded.ID); err != nil {
+				return err
+			}
+		case "timestamp":
+			if err := json.Unmarshal(raw, &decoded.Timestamp); err != nil {
+				return err
+			}
+		default:
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return err
+			}
+			decoded.Data[key] = value
+		}
+	}
+	*event = decoded
+	return nil
 }
 
 type Summary struct {
@@ -333,41 +376,94 @@ func (store *Store) Create(header Header) (Summary, error) {
 }
 
 func (store *Store) Append(namespace, id string, event Event) error {
+	_, err := store.AppendWithResult(namespace, id, event)
+	return err
+}
+
+func (store *Store) AppendWithResult(namespace, id string, event Event) (Event, error) {
 	if store == nil {
-		return fmt.Errorf("session: store is nil")
+		return Event{}, fmt.Errorf("session: store is nil")
 	}
 	if strings.TrimSpace(event.Type) == "" {
-		return fmt.Errorf("session: event type is required")
+		return Event{}, fmt.Errorf("session: event type is required")
 	}
-	if event.ID == "" {
-		event.ID = shortID()
-	}
-	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now().UTC()
-	}
+	event = PrepareEvent(event)
 	path, err := store.SessionPath(namespace, id)
 	if err != nil {
-		return err
+		return Event{}, err
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("session: open %q for append: %w", path, err)
+		return Event{}, fmt.Errorf("session: open %q for append: %w", path, err)
 	}
 	defer file.Close()
 	if err := writeJSONLine(file, event); err != nil {
-		return fmt.Errorf("session: append event: %w", err)
+		return Event{}, fmt.Errorf("session: append event: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("session: sync event: %w", err)
+		return Event{}, fmt.Errorf("session: sync event: %w", err)
 	}
-	return nil
+	return event, nil
 }
 
 func (store *Store) AppendEvent(namespace, id, eventType string, data map[string]any) error {
 	return store.Append(namespace, id, NewEvent(eventType, data))
+}
+
+func (store *Store) AppendEventWithResult(namespace, id, eventType string, data map[string]any) (Event, error) {
+	return store.AppendWithResult(namespace, id, NewEvent(eventType, data))
+}
+
+func (store *Store) ReadEvents(namespace, id, after string) ([]Event, error) {
+	if store == nil {
+		return nil, fmt.Errorf("session: store is nil")
+	}
+	path, err := store.SessionPath(namespace, id)
+	if err != nil {
+		return nil, err
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("session: open %q: %w", path, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("session: read header %q: %w", path, err)
+		}
+		return nil, fmt.Errorf("session: empty header in %q", path)
+	}
+	foundCursor := strings.TrimSpace(after) == ""
+	events := make([]Event, 0)
+	for scanner.Scan() {
+		var event Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return nil, fmt.Errorf("session: decode event %q: %w", path, err)
+		}
+		if !foundCursor {
+			if event.ID == after {
+				foundCursor = true
+			}
+			continue
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("session: read events %q: %w", path, err)
+	}
+	if !foundCursor {
+		return nil, fmt.Errorf("session: event cursor %q not found", after)
+	}
+	return events, nil
 }
 
 func (store *Store) Read(namespace, id string) (Summary, error) {

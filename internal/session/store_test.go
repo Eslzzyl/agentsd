@@ -84,6 +84,42 @@ func TestStoreCreatesNamespaceSessionAndReadsTerminalState(t *testing.T) {
 	}
 }
 
+func TestStoreReadsEventsAfterCursor(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(Header{Namespace: "events", Task: "stream"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AppendEventWithResult("events", created.Header.ID, EventAgentStarted, map[string]any{"turn": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AppendEventWithResult("events", created.Header.ID, EventAgentIdle, map[string]any{"turn": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.ReadEvents("events", created.Header.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].ID != first.ID || all[1].ID != second.ID {
+		t.Fatalf("events = %#v", all)
+	}
+	afterFirst, err := store.ReadEvents("events", created.Header.ID, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterFirst) != 1 || afterFirst[0].ID != second.ID {
+		t.Fatalf("events after first = %#v", afterFirst)
+	}
+	if _, err := store.ReadEvents("events", created.Header.ID, "missing"); err == nil {
+		t.Fatal("missing cursor was accepted")
+	}
+}
+
 func TestStoreRecoverMarksIncompleteSessionFailed(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

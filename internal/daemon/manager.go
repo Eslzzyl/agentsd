@@ -137,9 +137,11 @@ type managedAgent struct {
 
 type Manager struct {
 	mu      sync.RWMutex
+	eventMu sync.Mutex
 	agents  map[string]*managedAgent
 	factory RuntimeFactory
 	store   *session.Store
+	events  *eventHub
 }
 
 type NamespaceResult struct {
@@ -166,6 +168,7 @@ func NewManager(factory RuntimeFactory, stores ...*session.Store) (*Manager, err
 		agents:  make(map[string]*managedAgent),
 		factory: factory,
 		store:   store,
+		events:  newEventHub(),
 	}
 	if store == nil {
 		return manager, nil
@@ -593,9 +596,8 @@ func (manager *Manager) setPersistenceError(record *managedAgent, err error) {
 }
 
 func (manager *Manager) appendEvent(record *managedAgent, event session.Event) error {
-	if manager.store == nil {
-		return nil
-	}
+	manager.eventMu.Lock()
+	defer manager.eventMu.Unlock()
 	manager.mu.RLock()
 	if record.deleted {
 		manager.mu.RUnlock()
@@ -604,7 +606,73 @@ func (manager *Manager) appendEvent(record *managedAgent, event session.Event) e
 	namespace := record.summary.Namespace
 	id := record.summary.ID
 	manager.mu.RUnlock()
-	return manager.store.Append(namespace, id, event)
+
+	event = session.PrepareEvent(event)
+	if manager.store != nil {
+		persisted, err := manager.store.AppendWithResult(namespace, id, event)
+		if err != nil {
+			return err
+		}
+		event = persisted
+	}
+	manager.events.publish(namespace, id, event)
+	return nil
+}
+
+func (manager *Manager) EventsInNamespace(namespace, id, after string) ([]session.Event, error) {
+	if strings.TrimSpace(namespace) != "" {
+		normalized, err := session.NormalizeNamespace(namespace)
+		if err != nil {
+			return nil, err
+		}
+		namespace = normalized
+	}
+	manager.mu.RLock()
+	record, err := manager.findLocked(namespace, id)
+	if err != nil {
+		manager.mu.RUnlock()
+		return nil, err
+	}
+	actualNamespace := record.summary.Namespace
+	actualID := record.summary.ID
+	manager.mu.RUnlock()
+	if manager.store == nil {
+		return nil, fmt.Errorf("daemon: session store is required")
+	}
+	return manager.store.ReadEvents(actualNamespace, actualID, after)
+}
+
+func (manager *Manager) SubscribeInNamespace(namespace, id, after string) (*eventSubscription, []session.Event, error) {
+	if strings.TrimSpace(namespace) != "" {
+		normalized, err := session.NormalizeNamespace(namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		namespace = normalized
+	}
+	manager.eventMu.Lock()
+	defer manager.eventMu.Unlock()
+	manager.mu.RLock()
+	record, err := manager.findLocked(namespace, id)
+	if err != nil {
+		manager.mu.RUnlock()
+		return nil, nil, err
+	}
+	actualNamespace := record.summary.Namespace
+	actualID := record.summary.ID
+	manager.mu.RUnlock()
+
+	var history []session.Event
+	if manager.store != nil {
+		history, err = manager.store.ReadEvents(actualNamespace, actualID, after)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else if strings.TrimSpace(after) != "" {
+		return nil, nil, fmt.Errorf("daemon: event cursor requires a session store")
+	}
+	subscription := manager.events.subscribe(actualNamespace, actualID)
+	return subscription, history, nil
 }
 
 func eventToSession(event tools.Event) session.Event {

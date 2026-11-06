@@ -163,6 +163,16 @@ func (server *Server) handleRequest(request Request) (any, error) {
 			return nil, err
 		}
 		return server.manager.InboxInNamespace(params.Namespace, params.ID)
+	case "session.events":
+		var params struct {
+			Namespace string `json:"namespace"`
+			ID        string `json:"id"`
+			After     string `json:"after"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return server.manager.EventsInNamespace(params.Namespace, params.ID, params.After)
 	case "kill":
 		var params struct {
 			Namespace string `json:"namespace"`

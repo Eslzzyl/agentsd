@@ -90,9 +90,9 @@
   * Windows 10 (Build 17063+) 原生支持 `AF_UNIX`，Go 语言自 1.12 起标准库 `net.Listen("unix", ...)` 原生跨平台兼容。
   * 弃用 Windows Named Pipe 设想，实现 100% 跨平台统一套接字抽象，免除端口冲突、防火墙弹窗与权限裸奔隐患。
   * 客户端 SDK 抽象 Endpoint 参数（默认为 `unix:///.../agentsd.sock`，允许未来配置网络 WebSocket endpoint，为远程客户端预留扩展能力）。
-* **协议层**：采用 **WebSocket（运行于 UDS 之上）**。
-  * 单连接全双工：一条连接同时承担指令请求、双向流式数据传输与实时插话，避免“一条读、一条写”的连接割裂。
-  * 统一协议帧：借鉴轻量 JSON-RPC / 消息帧封装，CLI、外部助理与 GUI 仪表盘均通过同一套协议既接收事件推送，又实时反向注入控制指令。
+* **协议层**：命令 RPC 继续使用 JSONL over UDS；事件流使用运行于独立 UDS 的 WebSocket，默认路径为 `<agentsd.sock>.ws`。
+  * 事件订阅帧支持 `subscribe`、`unsubscribe`、`ping`，同一 Session 的多个订阅者各自接收事件副本。
+  * 事件先写入 Session JSONL，再发布给订阅者；事件 ID 支持通过 `after` 游标恢复。
 
 ### 4.2 内部通信（父子 Agent 直接通信、Subagent 兄弟通信）
 
@@ -169,8 +169,8 @@ agents inbox -n <namespace> <id>
 
 **观测与流式跟踪**
 ```bash
-agents activity <id>          # 查看历史摘要
-agents activity <id> --follow # 建立 WebSocket 实时跟随输出
+agents activity -n <namespace> <id>                              # 查看历史事件
+agents activity -n <namespace> --follow [--after <event-id>] <id> # WebSocket 实时跟随输出
 agents log <session>
 agents show <event-id>
 ```
@@ -195,7 +195,7 @@ agents show <event-id>
 |---|---|---|
 | **开发语言** | **Go** | 原生高并发协程（Goroutine）、极低资源开销、跨平台单二进制交付。 |
 | **外部 IPC** | **Unix Domain Socket (UDS)** | 跨平台统一（包括 Win10+）、原生文件权限安全控制、免端口冲突与防火墙弹窗。 |
-| **IPC 协议** | **WebSocket over UDS** | 单一连接实现真正的全双工双向交互，兼顾短命令请求与实时事件流，免去多连接维护。 |
+| **IPC 协议** | **JSONL RPC + WebSocket over UDS** | 命令请求使用现有 UDS，事件订阅使用独立 UDS WebSocket，支持多监听者与游标恢复。 |
 | **内部通信** | **IrcBus (内存 Channel/Map)** | 进程内纯内存调度，发后即忘，配合 Steer/Aside 实现全双工非阻塞。 |
 | **Agent 并发** | **Goroutine Runtime** | 单机单进程内并发，轻量秒级创建，支持全局资源限流。 |
 | **模型接入** | **可插拔统一 Provider** | 优先适配低成本模型（如 GPT、DeepSeek）充当执行苦力，解耦具体模型供应商。 |
@@ -245,6 +245,11 @@ agents show <event-id>
 3. 增加即时工具中断与 `agents wait`。
 
 ### 阶段四：流式观测与模块化 GUI
-1. 实现 WebSocket 实时事件广播，支持同一 Session 的多个监听者，完成 `agents activity <id> --follow`。
-2. 搭建独立的、可选的 GPU 渲染桌面监控应用。
-3. 完善 Session 分支历史与故障恢复机制。
+
+当前实现：
+1. WebSocket 实时事件广播，支持同一 Session 的多个监听者。
+2. `agents activity --follow` 支持历史事件与实时事件跟随。
+
+后续工作：
+1. 搭建独立的、可选的 GPU 渲染桌面监控应用。
+2. 完善 Session 分支历史与故障恢复机制。

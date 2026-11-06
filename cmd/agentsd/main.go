@@ -40,9 +40,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
+	webSocketSocketPath := daemon.WebSocketSocketPath(*socketPath)
+	webSocketListener, err := daemon.ListenUnix(webSocketSocketPath)
+	if err != nil {
 		_ = listener.Close()
 		_ = os.Remove(*socketPath)
+		log.Fatal(err)
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = webSocketListener.Close()
+		_ = os.Remove(*socketPath)
+		_ = os.Remove(webSocketSocketPath)
 	}()
 
 	server := daemon.NewServer(manager)
@@ -52,6 +61,10 @@ func main() {
 	go func() {
 		<-signals
 		_ = listener.Close()
+		_ = webSocketListener.Close()
+	}()
+	go func() {
+		_ = server.ServeWebSocket(webSocketListener)
 	}()
 
 	if err := server.Serve(listener); err != nil {

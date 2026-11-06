@@ -35,6 +35,8 @@ func main() {
 		err = runSend(os.Args[2:])
 	case "inbox":
 		err = runInbox(os.Args[2:])
+	case "activity":
+		err = runActivity(os.Args[2:])
 	case "namespace":
 		err = runNamespace(os.Args[2:])
 	default:
@@ -248,6 +250,80 @@ func runInbox(args []string) error {
 	return callAndPrint(*socket, daemon.Request{Method: "session.inbox", Params: params}, *jsonOutput)
 }
 
+func runActivity(args []string) error {
+	flags := flag.NewFlagSet("activity", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
+	follow := flags.Bool("follow", false, "follow live events over WebSocket")
+	after := flags.String("after", "", "resume after an event ID")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("usage: agents activity [--socket path] [-n namespace] [--follow] [--after event-id] <id>")
+	}
+	id := flags.Arg(0)
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(id, "/") {
+		return fmt.Errorf("namespace is required")
+	}
+	if *follow {
+		return followActivity(*socket, *namespace, id, *after, *jsonOutput)
+	}
+	params, err := json.Marshal(struct {
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+		After     string `json:"after"`
+	}{Namespace: *namespace, ID: id, After: *after})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "session.events", Params: params}, *jsonOutput)
+}
+
+func followActivity(socket, namespace, id, after string, jsonOutput bool) error {
+	ctx := context.Background()
+	connection, _, err := daemon.DialWebSocket(ctx, daemon.WebSocketSocketPath(socket))
+	if err != nil {
+		return fmt.Errorf("connect to event stream: %w", err)
+	}
+	defer connection.Close()
+	if err := connection.WriteJSON(map[string]any{
+		"type":       "subscribe",
+		"namespace":  namespace,
+		"session_id": id,
+		"after":      after,
+	}); err != nil {
+		return fmt.Errorf("subscribe to event stream: %w", err)
+	}
+	for {
+		var raw json.RawMessage
+		if err := connection.ReadJSON(&raw); err != nil {
+			return fmt.Errorf("read event stream: %w", err)
+		}
+		if jsonOutput {
+			fmt.Println(string(raw))
+			continue
+		}
+		var frame struct {
+			Type  string          `json:"type"`
+			Event json.RawMessage `json:"event"`
+			Error string          `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			return err
+		}
+		switch frame.Type {
+		case "event":
+			fmt.Println(string(frame.Event))
+		case "error", "subscription_closed":
+			return errors.New(frame.Error)
+		}
+	}
+}
+
 func runNamespace(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: agents namespace <create|delete|rename|list>")
@@ -420,6 +496,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|namespace> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace> [options]")
 	os.Exit(2)
 }
