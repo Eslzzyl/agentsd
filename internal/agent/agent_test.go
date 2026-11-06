@@ -32,6 +32,47 @@ func (client *scriptedClient) Stream(context.Context, llm.Request, func(llm.Even
 	return errors.New("stream is not used")
 }
 
+type controlClient struct {
+	firstResponse chan struct{}
+	mainCalls     int
+	summaryCalls  int
+}
+
+func (client *controlClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	if len(request.Messages) > 0 &&
+		request.Messages[0].Role == llm.RoleSystem &&
+		request.Messages[0].Content == summarySystemPrompt {
+		client.summaryCalls++
+		return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "manual summary",
+		}}}}, nil
+	}
+	client.mainCalls++
+	if client.mainCalls == 1 {
+		close(client.firstResponse)
+		return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "control-call",
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      "lookup",
+					Arguments: `{}`,
+				},
+			}},
+		}}}}, nil
+	}
+	return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: "done",
+	}}}}, nil
+}
+
+func (client *controlClient) Stream(context.Context, llm.Request, func(llm.Event) error) error {
+	return errors.New("stream is not used")
+}
+
 type fixedTool struct {
 	name       string
 	definition llm.Tool
@@ -131,6 +172,69 @@ func TestRuntimeRunsToolCallsUntilFinalMessage(t *testing.T) {
 	}
 	if len(client.requests) != 2 || len(client.requests[1].Messages) != 3 {
 		t.Fatalf("requests = %#v", client.requests)
+	}
+}
+func TestRuntimeProcessesControlAtTurnBoundary(t *testing.T) {
+	client := &controlClient{firstResponse: make(chan struct{})}
+	toolRelease := make(chan struct{})
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result:  "recent",
+		release: toolRelease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{ContextWindow: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := make(chan ControlRequest, 1)
+	controlResult := make(chan ControlResult, 1)
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := runtime.Run(context.Background(), RunRequest{
+			Model: "test-model",
+			Messages: []llm.Message{
+				{Role: llm.RoleUser, Content: "old task"},
+				{Role: llm.RoleAssistant, Content: "old result"},
+				{Role: llm.RoleUser, Content: "continue"},
+			},
+			Control: control,
+		})
+		runDone <- runErr
+	}()
+
+	select {
+	case <-client.firstResponse:
+	case <-time.After(time.Second):
+		t.Fatal("first model response did not arrive")
+	}
+	control <- ControlRequest{
+		Kind: ControlContextCompact,
+		Complete: func(result ControlResult) {
+			controlResult <- result
+		},
+	}
+	close(toolRelease)
+	select {
+	case result := <-controlResult:
+		if result.Status != ControlCompleted || result.Compaction == nil {
+			t.Fatalf("control result = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manual compaction did not complete")
+	}
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	if client.summaryCalls != 1 {
+		t.Fatalf("summary calls = %d, want 1", client.summaryCalls)
 	}
 }
 

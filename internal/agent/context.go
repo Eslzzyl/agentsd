@@ -199,7 +199,7 @@ func (state *contextState) prepare(ctx context.Context) error {
 		if !shouldCompact {
 			return nil
 		}
-		if err := state.compact(ctx); err != nil {
+		if _, err := state.compact(ctx); err != nil {
 			return err
 		}
 	}
@@ -246,7 +246,7 @@ func (state *contextState) maybeStartSpeculation(ctx context.Context) {
 	}()
 }
 
-func (state *contextState) compact(ctx context.Context) error {
+func (state *contextState) compact(ctx context.Context) (ContextEvent, error) {
 	candidate, err := state.awaitSpeculation(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		candidate = nil
@@ -255,8 +255,10 @@ func (state *contextState) compact(ctx context.Context) error {
 		state.mu.Lock()
 		valid := state.candidateValidLocked(candidate)
 		state.mu.Unlock()
-		if valid && state.applyCandidate(candidate) {
-			return nil
+		if valid {
+			if event, ok := state.applyCandidate(candidate); ok {
+				return event, nil
+			}
 		}
 	}
 
@@ -264,11 +266,11 @@ func (state *contextState) compact(ctx context.Context) error {
 	plan := state.planLocked()
 	state.mu.Unlock()
 	if plan == nil {
-		return errContextNoProgress
+		return ContextEvent{}, errContextNoProgress
 	}
 	summary, err := state.generateSummary(ctx, plan.messagesToSummarize, plan.previousSummary)
 	if err != nil {
-		return fmt.Errorf("agent: summarize context: %w", err)
+		return ContextEvent{}, fmt.Errorf("agent: summarize context: %w", err)
 	}
 	candidate = &compactionCandidate{
 		baseHistory:  plan.baseHistory,
@@ -276,10 +278,15 @@ func (state *contextState) compact(ctx context.Context) error {
 		summary:      summary,
 		tokensBefore: plan.tokensBefore,
 	}
-	if !state.applyCandidate(candidate) {
-		return errContextNoProgress
+	event, ok := state.applyCandidate(candidate)
+	if !ok {
+		return ContextEvent{}, errContextNoProgress
 	}
-	return nil
+	return event, nil
+}
+
+func (state *contextState) manualCompact(ctx context.Context) (ContextEvent, error) {
+	return state.compact(ctx)
 }
 
 func (state *contextState) awaitSpeculation(ctx context.Context) (*compactionCandidate, error) {
@@ -343,11 +350,11 @@ func (state *contextState) candidateValidLocked(candidate *compactionCandidate) 
 	return estimateMessages(projected) <= state.budget.recovery
 }
 
-func (state *contextState) applyCandidate(candidate *compactionCandidate) bool {
+func (state *contextState) applyCandidate(candidate *compactionCandidate) (ContextEvent, bool) {
 	state.mu.Lock()
 	if !state.candidateValidLocked(candidate) {
 		state.mu.Unlock()
-		return false
+		return ContextEvent{}, false
 	}
 	tokensBefore := state.contextTokensLocked()
 	state.summary = candidate.summary
@@ -372,7 +379,7 @@ func (state *contextState) applyCandidate(candidate *compactionCandidate) bool {
 	if state.eventSink != nil {
 		state.eventSink(event)
 	}
-	return true
+	return event, true
 }
 
 func (state *contextState) generateSummary(ctx context.Context, messages []llm.Message, previousSummary string) (string, error) {
@@ -491,7 +498,7 @@ func findCompactionCut(messages []llm.Message, keepTokens int) int {
 		}
 	}
 	cut := cutPoints[len(cutPoints)-1]
-	for index := len(cutPoints) - 1; index >= 0; index-- {
+	for index := len(cutPoints) - 1; index >= 1; index-- {
 		candidate := cutPoints[index]
 		if estimateMessages(messages[candidate:]) > keepTokens {
 			break

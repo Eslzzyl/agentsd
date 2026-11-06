@@ -27,10 +27,10 @@ func main() {
 		err = runSpawn(os.Args[2:])
 	case "ps":
 		err = runPS(os.Args[2:])
-	case "inspect":
-		err = runInspect(os.Args[2:])
 	case "kill":
 		err = runKill(os.Args[2:])
+	case "compact":
+		err = runCompact(os.Args[2:])
 	case "namespace":
 		err = runNamespace(os.Args[2:])
 	default:
@@ -145,6 +145,42 @@ func runKill(args []string) error {
 	}
 	return callAndPrint(*socket, daemon.Request{Method: "kill", Params: params}, *jsonOutput)
 }
+func runCompact(args []string) error {
+	flags := flag.NewFlagSet("compact", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
+	wait := flags.Bool("wait", false, "wait for compaction to finish")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("usage: agents compact [--socket path] [-n namespace] [--wait] <id>")
+	}
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(flags.Arg(0), "/") {
+		return fmt.Errorf("namespace is required")
+	}
+	params, err := json.Marshal(struct {
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+		Wait      bool   `json:"wait"`
+	}{Namespace: *namespace, ID: flags.Arg(0), Wait: *wait})
+	if err != nil {
+		return err
+	}
+	timeout := 10 * time.Second
+	if *wait {
+		timeout = 5 * time.Minute
+	}
+	return callAndPrintWithTimeout(
+		*socket,
+		daemon.Request{Method: "session.compact", Params: params},
+		*jsonOutput,
+		timeout,
+	)
+}
 
 func runNamespace(args []string) error {
 	if len(args) == 0 {
@@ -240,7 +276,16 @@ func runNamespaceList(args []string) error {
 }
 
 func callAndPrint(socket string, request daemon.Request, jsonOutput bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	return callAndPrintWithTimeout(socket, request, jsonOutput, 10*time.Second)
+}
+
+func callAndPrintWithTimeout(
+	socket string,
+	request daemon.Request,
+	jsonOutput bool,
+	timeout time.Duration,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	result, err := daemon.Call(ctx, socket, request)
 	if err != nil {
@@ -309,6 +354,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|namespace> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|namespace> [options]")
 	os.Exit(2)
 }

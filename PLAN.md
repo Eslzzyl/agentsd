@@ -148,6 +148,8 @@ agents ps -n <namespace>                    # 表格默认截取 UUID 前 8 位�
 agents ps -A/--all-namespaces
 agents inspect -n <namespace> <id>             # 支持 UUID 前缀模糊匹配
 agents kill -n <namespace> <id>                # 支持 UUID 前缀模糊匹配
+agents compact -n <namespace> <id>             # 异步提交上下文压缩
+agents compact -n <namespace> <id> --wait      # 等待压缩完成
 agents pause <id>
 agents resume <id>
 ```

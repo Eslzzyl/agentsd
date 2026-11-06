@@ -66,12 +66,36 @@ type RunRequest struct {
 	Session          *tools.SessionContext
 	EventSink        tools.EventSink
 	ContextEventSink ContextEventSink
+	Control          <-chan ControlRequest
 }
 
 type RunResult struct {
 	FinalMessage llm.Message
 	Messages     []llm.Message
 	Turns        int
+}
+
+type ControlKind string
+
+const ControlContextCompact ControlKind = "context.compact"
+
+type ControlStatus string
+
+const (
+	ControlCompleted ControlStatus = "completed"
+	ControlNoChange  ControlStatus = "no_change"
+	ControlFailed    ControlStatus = "failed"
+)
+
+type ControlResult struct {
+	Status     ControlStatus
+	Compaction *ContextEvent
+	Error      string
+}
+
+type ControlRequest struct {
+	Kind     ControlKind
+	Complete func(ControlResult)
 }
 
 func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -97,6 +121,7 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	defer contextState.close()
 	events := newEventEmitter(eventSink)
 	for turn := 1; ; turn++ {
+		runtime.processControls(ctx, contextState, request.Control)
 		if runtime.maxTurns > 0 && turn > runtime.maxTurns {
 			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, ErrMaxTurns
 		}
@@ -123,9 +148,13 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 			assistant.Role = llm.RoleAssistant
 		}
 		contextState.append(assistant)
-		result := RunResult{FinalMessage: assistant, Messages: contextState.messages(), Turns: turn}
 		if len(assistant.ToolCalls) == 0 {
-			return result, nil
+			runtime.processControls(ctx, contextState, request.Control)
+			return RunResult{
+				FinalMessage: assistant,
+				Messages:     contextState.messages(),
+				Turns:        turn,
+			}, nil
 		}
 
 		toolMessages, err := runtime.executeToolBatch(ctx, turn, assistant.ToolCalls, session, events)
@@ -133,6 +162,45 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 			return RunResult{Messages: contextState.messages(), Turns: turn}, err
 		}
 		contextState.appendAll(toolMessages)
+	}
+}
+
+func (runtime *Runtime) processControls(
+	ctx context.Context,
+	state *contextState,
+	controls <-chan ControlRequest,
+) {
+	if controls == nil {
+		return
+	}
+	for {
+		select {
+		case control, ok := <-controls:
+			if !ok {
+				return
+			}
+			result := ControlResult{Status: ControlFailed}
+			switch control.Kind {
+			case ControlContextCompact:
+				event, err := state.manualCompact(ctx)
+				switch {
+				case err == nil:
+					result.Status = ControlCompleted
+					result.Compaction = &event
+				case errors.Is(err, errContextNoProgress):
+					result.Status = ControlNoChange
+				default:
+					result.Error = err.Error()
+				}
+			default:
+				result.Error = fmt.Sprintf("agent: unknown control %q", control.Kind)
+			}
+			if control.Complete != nil {
+				control.Complete(result)
+			}
+		default:
+			return
+		}
 	}
 }
 

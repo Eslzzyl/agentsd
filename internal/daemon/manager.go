@@ -37,19 +37,76 @@ type AgentSummary struct {
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
-
-type NamespaceResult struct {
-	Name string `json:"name"`
+type CompactResult struct {
+	CommandID        string `json:"command_id"`
+	SessionID        string `json:"session_id"`
+	Status           string `json:"status"`
+	CompactionNumber int    `json:"compaction_number,omitempty"`
+	TokensBefore     int    `json:"tokens_before,omitempty"`
+	RemovedMessages  int    `json:"removed_messages,omitempty"`
+	KeptMessages     int    `json:"kept_messages,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
-type NamespaceRenameResult struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+type compactionCommand struct {
+	mu       sync.Mutex
+	result   CompactResult
+	done     chan struct{}
+	finished bool
+}
+
+func newCompactionCommand(sessionID string) *compactionCommand {
+	return &compactionCommand{
+		result: CompactResult{
+			CommandID: uuid.NewString(),
+			SessionID: sessionID,
+			Status:    "queued",
+		},
+		done: make(chan struct{}),
+	}
+}
+
+func (command *compactionCommand) complete(result agent.ControlResult) {
+	command.mu.Lock()
+	defer command.mu.Unlock()
+	if command.finished {
+		return
+	}
+	command.result.Status = string(result.Status)
+	if result.Compaction != nil {
+		command.result.CompactionNumber = result.Compaction.CompactionNumber
+		command.result.TokensBefore = result.Compaction.TokensBefore
+		command.result.RemovedMessages = result.Compaction.RemovedMessages
+		command.result.KeptMessages = result.Compaction.KeptMessages
+	}
+	command.result.Error = result.Error
+	command.finished = true
+	close(command.done)
+}
+
+func (command *compactionCommand) fail(message string) {
+	command.complete(agent.ControlResult{
+		Status: agent.ControlFailed,
+		Error:  message,
+	})
+}
+
+func (command *compactionCommand) wait() {
+	<-command.done
+}
+
+func (command *compactionCommand) snapshot() CompactResult {
+	command.mu.Lock()
+	defer command.mu.Unlock()
+	return command.result
 }
 
 type managedAgent struct {
 	summary         AgentSummary
 	cancel          context.CancelFunc
+	control         chan agent.ControlRequest
+	compaction      *compactionCommand
+	lastCompaction  *compactionCommand
 	cancelRequested bool
 	persistenceErr  error
 	deleted         bool
@@ -60,6 +117,15 @@ type Manager struct {
 	agents  map[string]*managedAgent
 	factory RuntimeFactory
 	store   *session.Store
+}
+
+type NamespaceResult struct {
+	Name string `json:"name"`
+}
+
+type NamespaceRenameResult struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 func NewManager(factory RuntimeFactory, stores ...*session.Store) (*Manager, error) {
@@ -228,7 +294,8 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 			Status:    "running",
 			StartedAt: startedAt,
 		},
-		cancel: cancel,
+		cancel:  cancel,
+		control: make(chan agent.ControlRequest, 1),
 	}
 	manager.mu.Lock()
 	manager.agents[id] = record
@@ -261,6 +328,7 @@ func (manager *Manager) run(ctx context.Context, record *managedAgent, runner Ru
 			{Role: llm.RoleSystem, Content: "You are a managed coding agent. Execute the task with the available tools and return a concise final report."},
 			{Role: llm.RoleUser, Content: summary.Task},
 		},
+		Control: record.control,
 		Session: &tools.SessionContext{
 			ID:            summary.ID,
 			Namespace:     summary.Namespace,
@@ -285,6 +353,8 @@ func (manager *Manager) run(ctx context.Context, record *managedAgent, runner Ru
 	finishedAt := time.Now().UTC()
 
 	manager.mu.Lock()
+	pendingCompaction := record.compaction
+	record.compaction = nil
 	record.summary.Turns = result.Turns
 	record.summary.FinishedAt = &finishedAt
 	cancelRequested := record.cancelRequested
@@ -302,6 +372,9 @@ func (manager *Manager) run(ctx context.Context, record *managedAgent, runner Ru
 	}
 	finalSummary := record.summary
 	manager.mu.Unlock()
+	if pendingCompaction != nil {
+		manager.failCompaction(record, pendingCompaction, "agent ended before context compaction started")
+	}
 
 	eventType := session.EventAgentCompleted
 	fields := map[string]any{
@@ -434,6 +507,127 @@ func (manager *Manager) inspectInNamespace(namespace, id string) (AgentSummary, 
 	result := record.summary
 	manager.mu.RUnlock()
 	return result, nil
+}
+func (manager *Manager) Compact(id string, wait bool) (CompactResult, error) {
+	return manager.compactInNamespace("", id, wait)
+}
+
+func (manager *Manager) CompactInNamespace(namespace, id string, wait bool) (CompactResult, error) {
+	if strings.TrimSpace(namespace) == "" {
+		return manager.compactInNamespace("", id, wait)
+	}
+	normalized, err := session.NormalizeNamespace(namespace)
+	if err != nil {
+		return CompactResult{}, err
+	}
+	return manager.compactInNamespace(normalized, id, wait)
+}
+
+func (manager *Manager) compactInNamespace(namespace, id string, wait bool) (CompactResult, error) {
+	manager.mu.Lock()
+	record, err := manager.findLocked(namespace, id)
+	if err != nil {
+		manager.mu.Unlock()
+		return CompactResult{}, err
+	}
+	if record.summary.Status != "running" {
+		if command := record.lastCompaction; command != nil {
+			manager.mu.Unlock()
+			if wait {
+				command.wait()
+			}
+			return command.snapshot(), nil
+		}
+		status := record.summary.Status
+		manager.mu.Unlock()
+		return CompactResult{}, fmt.Errorf("daemon: agent %q is %s; context compaction requires a running agent", record.summary.ID, status)
+	}
+	if command := record.compaction; command != nil {
+		manager.mu.Unlock()
+		if wait {
+			command.wait()
+		}
+		return command.snapshot(), nil
+	}
+	if record.control == nil {
+		manager.mu.Unlock()
+		return CompactResult{}, fmt.Errorf("daemon: agent %q does not support context controls", record.summary.ID)
+	}
+	command := newCompactionCommand(record.summary.ID)
+	record.compaction = command
+	record.lastCompaction = command
+	request := agent.ControlRequest{
+		Kind: agent.ControlContextCompact,
+		Complete: func(result agent.ControlResult) {
+			manager.finishCompaction(record, command, result)
+		},
+	}
+	manager.mu.Unlock()
+
+	if err := manager.appendEvent(record, session.NewEvent(session.EventContextCompactionQueued, map[string]any{
+		"command_id": command.snapshot().CommandID,
+	})); err != nil {
+		manager.mu.Lock()
+		record.persistenceErr = err
+		manager.mu.Unlock()
+	}
+
+	manager.mu.Lock()
+	if record.compaction == command && record.summary.Status == "running" {
+		record.control <- request
+	}
+	manager.mu.Unlock()
+
+	if wait {
+		command.wait()
+	}
+	return command.snapshot(), nil
+}
+
+func (manager *Manager) finishCompaction(
+	record *managedAgent,
+	command *compactionCommand,
+	result agent.ControlResult,
+) {
+	command.complete(result)
+	manager.mu.Lock()
+	if record.compaction == command {
+		record.compaction = nil
+	}
+	record.lastCompaction = command
+	manager.mu.Unlock()
+	data := map[string]any{
+		"command_id": command.snapshot().CommandID,
+		"status":     string(result.Status),
+	}
+	if result.Error != "" {
+		data["error"] = result.Error
+	}
+	if err := manager.appendEvent(record, session.NewEvent(session.EventContextCompactionFinished, data)); err != nil {
+		manager.mu.Lock()
+		record.persistenceErr = err
+		manager.mu.Unlock()
+	}
+}
+
+func (manager *Manager) failCompaction(record *managedAgent, command *compactionCommand, message string) {
+	command.fail(message)
+	manager.mu.Lock()
+	if record.compaction == command {
+		record.compaction = nil
+	}
+	record.lastCompaction = command
+	manager.mu.Unlock()
+	data := map[string]any{
+		"command_id": command.snapshot().CommandID,
+		"status":     "failed",
+		"error":      message,
+	}
+	if err := manager.appendEvent(record, session.NewEvent(session.EventContextCompactionFinished, data)); err != nil {
+		manager.mu.Lock()
+		record.persistenceErr = err
+		manager.mu.Unlock()
+	}
 }
 
 func (manager *Manager) Kill(id string) (AgentSummary, error) {

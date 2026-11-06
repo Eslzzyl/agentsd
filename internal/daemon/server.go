@@ -131,6 +131,16 @@ func (server *Server) handleRequest(request Request) (any, error) {
 			return nil, err
 		}
 		return server.manager.InspectInNamespace(params.Namespace, params.ID)
+	case "session.compact":
+		var params struct {
+			Namespace string `json:"namespace"`
+			ID        string `json:"id"`
+			Wait      bool   `json:"wait"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return server.manager.CompactInNamespace(params.Namespace, params.ID, params.Wait)
 	case "kill":
 		var params struct {
 			Namespace string `json:"namespace"`

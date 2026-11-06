@@ -63,6 +63,29 @@ func TestContextBudgetDerivesCompactionValuesFromWindow(t *testing.T) {
 		t.Fatalf("summary budget = %#v", budget)
 	}
 }
+func TestContextStateManualCompactionWorksBelowAutomaticTrigger(t *testing.T) {
+	client := &compactionTestClient{}
+	state := newContextState(client, RunRequest{
+		Model: "test-model",
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "old task"},
+			{Role: llm.RoleAssistant, Content: "old result"},
+			{Role: llm.RoleUser, Content: "continue"},
+		},
+	}, 1000)
+	defer state.close()
+
+	event, err := state.manualCompact(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.CompactionNumber != 1 || event.RemovedMessages == 0 {
+		t.Fatalf("event = %#v", event)
+	}
+	if client.summaryCalls != 1 {
+		t.Fatalf("summary calls = %d, want 1", client.summaryCalls)
+	}
+}
 
 func TestFindCompactionCutKeepsLatestToolCallGroup(t *testing.T) {
 	messages := []llm.Message{

@@ -28,6 +28,29 @@ func (runner testRunner) Run(ctx context.Context, request agent.RunRequest) (age
 	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
 }
 
+type controlledRunner struct {
+	started  chan struct{}
+	received chan agent.ControlRequest
+	release  chan struct{}
+}
+
+func (runner *controlledRunner) Run(ctx context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	close(runner.started)
+	select {
+	case control := <-request.Control:
+		runner.received <- control
+		select {
+		case <-runner.release:
+			control.Complete(agent.ControlResult{Status: agent.ControlNoChange})
+			return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
+		case <-ctx.Done():
+			return agent.RunResult{}, ctx.Err()
+		}
+	case <-ctx.Done():
+		return agent.RunResult{}, ctx.Err()
+	}
+}
+
 type contextEventRunner struct{}
 
 func (contextEventRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunResult, error) {
@@ -138,6 +161,116 @@ func TestManagerKillCancelsRunner(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+func TestManagerCompactIsAsyncAndCoalesced(t *testing.T) {
+	runner := &controlledRunner{
+		started:  make(chan struct{}),
+		received: make(chan agent.ControlRequest, 1),
+		release:  make(chan struct{}),
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return runner, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned, err := manager.SpawnInNamespace("test", "", "compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	first, err := manager.CompactInNamespace("test", spawned.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "queued" || first.CommandID == "" {
+		t.Fatalf("first compact = %#v", first)
+	}
+	second, err := manager.CompactInNamespace("test", spawned.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.CommandID != first.CommandID || second.Status != "queued" {
+		t.Fatalf("coalesced compact = %#v, first = %#v", second, first)
+	}
+	select {
+	case <-runner.received:
+	case <-time.After(time.Second):
+		t.Fatal("compact request was not delivered")
+	}
+
+	waitResult := make(chan CompactResult, 1)
+	go func() {
+		result, waitErr := manager.CompactInNamespace("test", spawned.ID, true)
+		if waitErr != nil {
+			t.Errorf("wait compact: %v", waitErr)
+			return
+		}
+		waitResult <- result
+	}()
+	close(runner.release)
+	select {
+	case result := <-waitResult:
+		if result.Status != "no_change" {
+			t.Fatalf("wait compact = %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait compact did not finish")
+	}
+}
+func TestServerSessionCompact(t *testing.T) {
+	runner := &controlledRunner{
+		started:  make(chan struct{}),
+		received: make(chan agent.ControlRequest, 1),
+		release:  make(chan struct{}),
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return runner, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	socketPath := testSocketPath(t)
+	listener, err := ListenUnix(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = server.Serve(listener) }()
+
+	spawned, err := manager.SpawnInNamespace("test", "", "compact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	result, err := Call(context.Background(), socketPath, Request{
+		Method: "session.compact",
+		Params: mustJSON(map[string]any{
+			"namespace": "test",
+			"id":        spawned.ID,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact CompactResult
+	if err := json.Unmarshal(result, &compact); err != nil {
+		t.Fatal(err)
+	}
+	if compact.Status != "queued" || compact.SessionID != spawned.ID {
+		t.Fatalf("compact = %#v", compact)
+	}
+	close(runner.release)
 }
 
 func TestCallReturnsDaemonError(t *testing.T) {

@@ -19,11 +19,13 @@ import (
 )
 
 const (
-	EventAgentStarted     = "agent.started"
-	EventAgentCompleted   = "agent.completed"
-	EventAgentFailed      = "agent.failed"
-	EventAgentCanceled    = "agent.canceled"
-	EventContextCompacted = "context.compacted"
+	EventAgentStarted              = "agent.started"
+	EventAgentCompleted            = "agent.completed"
+	EventAgentFailed               = "agent.failed"
+	EventAgentCanceled             = "agent.canceled"
+	EventContextCompacted          = "context.compacted"
+	EventContextCompactionQueued   = "context.compaction.queued"
+	EventContextCompactionFinished = "context.compaction.finished"
 )
 
 type Header struct {
