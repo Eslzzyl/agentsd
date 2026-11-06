@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,7 +244,7 @@ func callAndPrint(socket string, request daemon.Request, jsonOutput bool) error 
 	defer cancel()
 	result, err := daemon.Call(ctx, socket, request)
 	if err != nil {
-		return err
+		return friendlyConnectionError(socket, err)
 	}
 	if request.Method == "ps" && !jsonOutput {
 		return printPS(result)
@@ -256,6 +258,19 @@ func callAndPrint(socket string, request daemon.Request, jsonOutput bool) error 
 	}
 	fmt.Println(formatted.String())
 	return nil
+}
+
+func friendlyConnectionError(socket string, err error) error {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "dial" {
+		return err
+	}
+	return fmt.Errorf(
+		"Unable to connect to the agentsd daemon.\n\nStart the daemon first:\n  agentsd --socket %q\n\nSocket path: %s\nConnection details: %w",
+		socket,
+		socket,
+		opErr.Err,
+	)
 }
 
 func printPS(result []byte) error {
