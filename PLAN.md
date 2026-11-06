@@ -35,23 +35,24 @@
 | **人类开发者（CLI 操作者）** | 通过终端命令（如 `agents ps`、`agents send`）进行调试、手动派单或干预。 |
 | **人类观察者（GUI 监控看板）** | 可选的独立 Web/桌面客户端，仅作为观察者订阅 Daemon 的事件流，提供全局可视化进展看板。 |
 
-### 2.2 全局寻址规范（Agent URI）
+### 2.2 目标寻址规范
 
-为保障未来平滑扩展到多节点或云端调度，系统统一采用 URI 规范对 Agent 进行逻辑寻址：
+系统统一采用极简、无协议头负担的路径格式对 Agent 进行寻址（不引入 `agent://` 伪协议）：
 
-```text
-agent://[namespace]/[agent_id]
-```
+- **同命名空间私信**：直接指定目标 `<session_id>`（如 UUID 或前缀短哈希 `4a8b2c91`）。系统自动补全当前上下文的命名空间。
+- **同命名空间广播**：指定 `"all"`，向当前命名空间内的所有活跃受管 Agent 广播。
+- **跨命名空间寻址（可选扩展）**：采用 `[namespace]/<session_id>` 路径格式（如 `frontend/4a8b2c91`）。
 
-- **单机环境**：`agent://local/a8F2`（或简写 `a8F2`，自动补全当前命名空间）。
-- **未来分布式/云端环境**：`agent://cloud-node-1/b7K1`。
-
-Agent 内部仅面向 URI 发送消息，对目标处于本地协程还是网络远程保持透明。
+无论是人类在终端使用 CLI（如 `agents send 4a8b2c91 "..."`），还是受管 Agent 在内部调用 `send("4a8b2c91", ...)`，格式完全统一直观，免除无谓的协议字符串解析开销。
 
 ### 2.3 Namespace & Session
 
-- **Namespace**：Agent 与任务资源的逻辑组织单元，由调用方指定或默认派生。同一 Namespace 下的 Agent 具备相互发现与协作可见性。
-- **Session**：受管 Agent 的持续交互与执行历史单元，以不可变事件流（Events）记录全生命周期。
+- **Namespace（命名空间）**：**项目/工作区级的逻辑协作域**（长生命周期、相对稳定，如 `agentsd`、`default`、`frontend-app`）。
+  - 磁盘组织：在存储层按 Namespace 划分目录 `sessions/<namespace>/`，避免随单次任务无限制膨胀。
+  - 作用边界：同一 Namespace 下的 Agent 具备相互发现与协作可见性；总线内部广播消息 `send("all", ...)` 严格局限在当前 Namespace 内；跨 Namespace 需显式指定。
+- **Session（会话）**：受管 Agent 执行的**不可变历史与状态持久化单元**（短生命周期）。
+  - 绑定关系：当前架构下一个活跃的受管 Agent 对应一个持久化 Session。
+  - **Session ID**：采用成熟标准库生成的 **UUIDv4**（如 `github.com/google/uuid`），全球唯一，彻底杜绝高并发或多次运行的命名冲突。
 
 ---
 
@@ -74,7 +75,7 @@ Agent 内部仅面向 URI 发送消息，对目标处于本地协程还是网络
        └─────────────────────────┬─────────────────────────┘
                                  │
                                  ▼
-                    [ 本地磁盘: sessions/*.jsonl ]
+              [ 本地磁盘: sessions/<namespace>/<uuid>.jsonl ]
 ```
 
 ---
@@ -105,7 +106,7 @@ Agent 内部仅面向 URI 发送消息，对目标处于本地协程还是网络
      * **来自同级 Peer 的消息** -> 视为 **`Aside`（旁白插话）**，暂存并延迟到当前步骤边界（Step Boundary，即当前工具执行完成）平滑并入上下文，不损坏原子工具执行。
   3. **接收方主动调用 `wait` 工具中**：总线直接 `resolve` 等待器，`wait` 工具立即返回新消息。
 * **Agent 内置工具**：
-  * `send(to, message)`：向指定 Agent URI 或 `"all"` 广播消息。
+  * `send(to, message)`：向指定 Agent ID、跨空间路径 `[namespace]/[id]` 或 `"all"` 广播消息。
   * `wait(timeout)`：主动让出资源，进入等待状态，直到有新消息或任务完成唤醒。
 
 ---
@@ -120,10 +121,19 @@ Agent 内部仅面向 URI 发送消息，对目标处于本地协程还是网络
 
 ### 5.2 存储与查询原则
 
-- 借鉴 Git 模型，执行历史不可变，仅追加（Append-only）。
-- 每个 Session 维护一个独立的 `events.jsonl` 文件。
-- 事件携带由字母数字组成的短 ID（Base62），查询摘要时输出紧凑单行格式，支持指定 ID 下钻详情。
-- 大型工具输出与文件使用独立 Blob 存储，事件中仅保存哈希/路径引用。
+- **单 Session 单 JSONL 文件**：
+  存储路径固定为 `~/.agentsd/sessions/<namespace>/<uuid>.jsonl`。执行历史自包含且不可变，仅追加（Append-only）。
+- **文件内容规范**：
+  - **Line 1 (Session Header / Manifest)**：Session 创建时写入，包含静态元数据：
+    ```json
+    {"type":"session.header","id":"<uuid>","namespace":"agentsd","model":"gpt-4o-mini","task":"执行代码重构","workspace":"/path/to/cwd","started_at":"2026-11-06T03:00:00Z"}
+    ```
+  - **Line 2 ~ N-1 (Events)**：执行全生命周期不可变事件序列（`turn.started`, `tool.started`, `tool.completed` 等），纯追加写入。事件携带短 ID（如 Base62 生成）。
+  - **Line N (Termination)**：终止事件（`agent.completed`, `agent.failed`, `agent.canceled`），包含耗时、最终报告或错误信息。
+- **超大内容分离引用**：大型工具输出与文件使用已有的全局 Blob 存储（`~/.agentsd/artifacts/<sha256>.artifact`），事件中仅保存哈希/路径引用。
+- **Crash 自愈与快速恢复（Recovery）**：
+  - 服务重启时，如果内存中未跟踪某个 Session，但磁盘 `.jsonl` 最后一行既不是 `agent.completed` 也不是 `agent.failed`，系统自动向末尾追加 `agent.failed`（标记 daemon 异常退出）实现无损自愈。
+  - 查询状态（如 `agents ps`）时无需解析全量事件，直接读取 Line 1 与文件末尾若干字节即可快速提取状态，无需维护额外的辅助索引文件。
 
 ---
 
@@ -133,10 +143,10 @@ CLI 既是外部 Agent（个人助理）调度的主要抓手，也是人类工�
 
 **任务与生命周期**
 ```bash
-agents spawn --model gpt-4o-mini --task "执行代码重构"
-agents ps
-agents inspect <id>
-agents kill <id>
+agents spawn --model gpt-4o-mini --task "执行代码重构" [-n <namespace>]
+agents ps [-n <namespace>] [-A/--all-namespaces] # 表格默认截取 UUID 前 8 位展示
+agents inspect <id>                             # 支持 UUID 前缀模糊匹配
+agents kill <id>                                # 支持 UUID 前缀模糊匹配
 agents pause <id>
 agents resume <id>
 ```
@@ -180,7 +190,8 @@ agents show <event-id>
 | **内部通信** | **IrcBus (内存 Channel/Map)** | 进程内纯内存调度，发后即忘，配合 Steer/Aside 实现全双工非阻塞。 |
 | **Agent 并发** | **Goroutine Runtime** | 单机单进程内并发，轻量秒级创建，支持全局资源限流。 |
 | **模型接入** | **可插拔统一 Provider** | 优先适配低成本模型（如 GPT、DeepSeek）充当执行苦力，解耦具体模型供应商。 |
-| **持久化** | **JSONL (Append-only) + Blob** | 天然抗故障中断，支持高效流式写入与事件重放。 |
+| **唯一标识** | **UUIDv4 (`github.com/google/uuid`)** | 成熟事实标准，解析校验完备，彻底避免跨任务/跨时间的 ID 碰撞。 |
+| **持久化** | **JSONL (Append-only per session in namespace) + Artifact Blob** | 单 Session 单文件，天然抗故障中断，支持高效流式追加与无损自愈。 |
 | **观测层** | **CLI + 可选独立 GUI** | 彻底分离无头核心与可视化看板。 |
 
 ---
@@ -199,12 +210,17 @@ agents show <event-id>
 6. **文件工具基础能力与第一批工具**：建立 Workspace、路径解析、输出限制、artifact、文件快照，并接入 `read`、`glob`、`grep`、`find`、`write`、`edit`、`shell`。
 7. **事件持久化**：每一步操作追加写入本地 `events.jsonl`。
 
-### 阶段二：轻量 Daemon 宿主与 UDS IPC
-在核心 Runtime 稳定后，将其托管至后台服务：
+### 阶段二：轻量 Daemon 宿主、UDS IPC 与 Session 持久化
+在核心 Runtime 稳定后，将其托管至后台服务并实现完备的持久化：
 1. 实现基础常驻守护进程 `agentsd`。
 2. 实现全平台统一的 Unix Domain Socket 监听与基础 WebSocket 握手。
-3. 实现 CLI 的 `spawn`、`ps`、`inspect`、`kill`。
-4. 实现启动文件锁与单实例保护。
+3. **Session 持久化与存储引擎**：
+   - 引入成熟的 `github.com/google/uuid`。
+   - 建立 `internal/session` 包，管理 `~/.agentsd/sessions/<namespace>/<uuid>.jsonl`。
+   - 实现单文件 Header 写入、Append-only 事件追加、文件末尾状态快速提取与 Crash 自愈。
+4. **Daemon 状态机改造**：将 `daemon.Manager` 从纯内存映射切换为基于 `session.Store` 的状态驱动。
+5. 实现 CLI 的 `spawn`、`ps`（支持 `-n` / `-A` 与 UUID 短前缀显示）、`inspect`（前缀匹配）、`kill`。
+6. 实现启动文件锁与单实例保护。
 
 ### 阶段三：全双工内部通信总线（IrcBus）
 实现多 Agent 间的全双工与非阻塞干预：
