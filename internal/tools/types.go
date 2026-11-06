@@ -43,6 +43,38 @@ func (policy ToolPolicy) normalized() ToolPolicy {
 	return policy
 }
 
+// MessageMode controls when a queued message reaches the model.
+type MessageMode string
+
+const (
+	MessageModeSteer    MessageMode = "steer"
+	MessageModeFollowUp MessageMode = "follow_up"
+)
+
+// QueuedMessage is a message admitted to a session mailbox.
+type QueuedMessage struct {
+	ID        string      `json:"id"`
+	Mode      MessageMode `json:"mode"`
+	Content   string      `json:"content"`
+	Source    string      `json:"source,omitempty"`
+	From      string      `json:"from,omitempty"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+// MessageFilter limits messages returned by a wait operation.
+type MessageFilter struct {
+	From string
+}
+
+// MessageQueue supplies queued messages to the runtime and wait tool.
+type MessageQueue interface {
+	Take(mode MessageMode, limit int) ([]QueuedMessage, error)
+	Wait(ctx context.Context, filter MessageFilter, timeout time.Duration) (QueuedMessage, bool, error)
+}
+
+// WaitingStateSink reports when the model-facing wait tool parks or wakes.
+type WaitingStateSink func(waiting bool)
+
 // ToolSpec is the model-facing definition plus the typed argument decoder.
 type ToolSpec struct {
 	Name        string
@@ -75,6 +107,8 @@ type SessionContext struct {
 	WorkspaceRoot string
 	Env           map[string]string
 	Values        map[string]any
+	MessageQueue  MessageQueue
+	OnWaiting     WaitingStateSink
 }
 
 // Call identifies one model-requested tool invocation.

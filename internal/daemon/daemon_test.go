@@ -12,6 +12,7 @@ import (
 	"agentsd/internal/agent"
 	"agentsd/internal/llm"
 	"agentsd/internal/session"
+	"agentsd/internal/tools"
 
 	"github.com/google/uuid"
 )
@@ -26,6 +27,36 @@ func (runner testRunner) Run(ctx context.Context, request agent.RunRequest) (age
 		return agent.RunResult{}, ctx.Err()
 	}
 	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
+}
+
+type messageRunner struct {
+	calls chan []llm.Message
+}
+
+func (runner *messageRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	messages := append([]llm.Message(nil), request.Messages...)
+	assistant := llm.Message{Role: llm.RoleAssistant, Content: "done"}
+	messages = append(messages, assistant)
+	runner.calls <- messages
+	return agent.RunResult{FinalMessage: assistant, Messages: messages, Turns: 1}, nil
+}
+
+type blockingMessageRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (runner *blockingMessageRunner) Run(ctx context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	runner.started <- struct{}{}
+	select {
+	case <-runner.release:
+	case <-ctx.Done():
+		return agent.RunResult{}, ctx.Err()
+	}
+	messages := append([]llm.Message(nil), request.Messages...)
+	assistant := llm.Message{Role: llm.RoleAssistant, Content: "done"}
+	messages = append(messages, assistant)
+	return agent.RunResult{FinalMessage: assistant, Messages: messages, Turns: 1}, nil
 }
 
 type controlledRunner struct {
@@ -120,7 +151,7 @@ func TestServerSpawnAndInspect(t *testing.T) {
 		if err := json.Unmarshal(result, &inspected); err != nil {
 			t.Fatal(err)
 		}
-		if inspected.Status == "completed" {
+		if inspected.Status == "idle" {
 			if inspected.Final != "done" {
 				t.Fatalf("inspected = %#v", inspected)
 			}
@@ -130,6 +161,132 @@ func TestServerSpawnAndInspect(t *testing.T) {
 			t.Fatalf("agent did not complete: %#v", inspected)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestManagerDeliversSteerAndFollowUpMessagesAcrossTurns(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &messageRunner{calls: make(chan []llm.Message, 3)}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return runner, "test-model", nil
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned, err := manager.SpawnInNamespace("messages", "", "initial task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first := <-runner.calls; len(first) != 3 || first[1].Content != "initial task" {
+		t.Fatalf("first turn = %#v", first)
+	}
+	steer, err := manager.SendInNamespace("messages", spawned.ID, "change direction", tools.MessageModeSteer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steer.Status != "queued" || steer.Mode != tools.MessageModeSteer {
+		t.Fatalf("steer receipt = %#v", steer)
+	}
+	second := <-runner.calls
+	if len(second) < 2 || second[len(second)-2].Content != "change direction" {
+		t.Fatalf("steer turn = %#v", second)
+	}
+	followUp, err := manager.SendInNamespace("messages", spawned.ID, "summarize", tools.MessageModeFollowUp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followUp.Status != "queued" || followUp.Mode != tools.MessageModeFollowUp {
+		t.Fatalf("follow-up receipt = %#v", followUp)
+	}
+	third := <-runner.calls
+	if len(third) < 2 || third[len(third)-2].Content != "summarize" {
+		t.Fatalf("follow-up turn = %#v", third)
+	}
+	path, err := store.SessionPath("messages", spawned.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"type":"message.queued"`) || !strings.Contains(text, `"type":"message.delivered"`) {
+		t.Fatalf("session log = %s", text)
+	}
+	if _, err := manager.Kill(spawned.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerSessionSendAndInbox(t *testing.T) {
+	runner := &blockingMessageRunner{
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return runner, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	socketPath := testSocketPath(t)
+	listener, err := ListenUnix(socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = server.Serve(listener) }()
+
+	spawned, err := manager.SpawnInNamespace("messages", "", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	result, err := Call(context.Background(), socketPath, Request{
+		Method: "session.send",
+		Params: mustJSON(map[string]any{
+			"namespace": "messages",
+			"id":        spawned.ID,
+			"mode":      "steer",
+			"content":   "inspect the failing test",
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt MessageReceipt
+	if err := json.Unmarshal(result, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != "queued" || receipt.Mode != tools.MessageModeSteer {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+	result, err = Call(context.Background(), socketPath, Request{
+		Method: "session.inbox",
+		Params: mustJSON(map[string]string{"namespace": "messages", "id": spawned.ID}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inbox []tools.QueuedMessage
+	if err := json.Unmarshal(result, &inbox); err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 || inbox[0].Content != "inspect the failing test" {
+		t.Fatalf("inbox = %#v", inbox)
+	}
+	runner.release <- struct{}{}
+	if _, err := manager.Kill(spawned.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -326,7 +483,7 @@ func TestManagerPersistsNamespacesAndReloadsSessions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if inspected.Status == "completed" {
+		if inspected.Status == "idle" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -349,7 +506,7 @@ func TestManagerPersistsNamespacesAndReloadsSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Status != "completed" || recovered.Final != "done" {
+	if recovered.Status != "idle" || recovered.Final != "done" {
 		t.Fatalf("recovered = %#v", recovered)
 	}
 }
@@ -374,7 +531,7 @@ func TestManagerPersistsContextCompactionEvent(t *testing.T) {
 		if inspectErr != nil {
 			t.Fatal(inspectErr)
 		}
-		if inspected.Status == "completed" {
+		if inspected.Status == "idle" {
 			break
 		}
 		if time.Now().After(deadline) {

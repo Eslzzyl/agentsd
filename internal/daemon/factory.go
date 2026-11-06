@@ -66,6 +66,7 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 		tools.WriteTool{Workspace: workspace},
 		tools.EditTool{Workspace: workspace},
 		tools.ShellTool{WorkingDir: workspace.Root, MaxOutputBytes: tools.DefaultShellMaxOutputBytes},
+		tools.WaitTool{},
 	)
 	if err != nil {
 		return nil, "", err
@@ -102,4 +103,15 @@ func (runner configuredRunner) Run(ctx context.Context, request agent.RunRequest
 	request.MaxTokens = runner.maxTokens
 	request.ExtraBody = runner.extraBody
 	return runner.runtime.Run(ctx, request)
+}
+
+func (runner configuredRunner) UsesMessageQueue() bool {
+	return true
+}
+
+func (runner configuredRunner) Compact(ctx context.Context, request agent.RunRequest) (agent.RunResult, agent.ControlResult, error) {
+	request.Model = runner.model
+	request.MaxTokens = runner.maxTokens
+	request.ExtraBody = runner.extraBody
+	return runner.runtime.Compact(ctx, request)
 }

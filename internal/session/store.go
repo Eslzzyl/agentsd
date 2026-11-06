@@ -20,9 +20,16 @@ import (
 
 const (
 	EventAgentStarted              = "agent.started"
+	EventAgentResumed              = "agent.resumed"
+	EventAgentIdle                 = "agent.idle"
 	EventAgentCompleted            = "agent.completed"
 	EventAgentFailed               = "agent.failed"
 	EventAgentCanceled             = "agent.canceled"
+	EventSessionWaiting            = "session.waiting"
+	EventSessionWoken              = "session.woken"
+	EventMessageQueued             = "message.queued"
+	EventMessageDelivered          = "message.delivered"
+	EventMessageWaitConsumed       = "message.wait_consumed"
 	EventContextCompacted          = "context.compacted"
 	EventContextCompactionQueued   = "context.compaction.queued"
 	EventContextCompactionFinished = "context.compaction.finished"
@@ -635,19 +642,23 @@ func shortID() string {
 
 func statusForEvent(eventType string) string {
 	switch eventType {
+	case EventAgentIdle:
+		return "idle"
 	case EventAgentCompleted:
 		return "completed"
 	case EventAgentFailed:
 		return "failed"
 	case EventAgentCanceled:
 		return "canceled"
+	case EventSessionWaiting:
+		return "waiting"
 	default:
 		return "running"
 	}
 }
 
 func isTerminal(eventType string) bool {
-	return eventType == EventAgentCompleted || eventType == EventAgentFailed || eventType == EventAgentCanceled
+	return eventType == EventAgentIdle || eventType == EventAgentCompleted || eventType == EventAgentFailed || eventType == EventAgentCanceled
 }
 
 func writeJSONLine(writer io.Writer, value any) error {

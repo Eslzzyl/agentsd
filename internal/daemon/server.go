@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"strings"
+
+	"agentsd/internal/tools"
 )
 
 type Server struct {
@@ -141,6 +143,26 @@ func (server *Server) handleRequest(request Request) (any, error) {
 			return nil, err
 		}
 		return server.manager.CompactInNamespace(params.Namespace, params.ID, params.Wait)
+	case "session.send":
+		var params struct {
+			Namespace string            `json:"namespace"`
+			ID        string            `json:"id"`
+			Mode      tools.MessageMode `json:"mode"`
+			Content   string            `json:"content"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return server.manager.SendInNamespace(params.Namespace, params.ID, params.Content, params.Mode)
+	case "session.inbox":
+		var params struct {
+			Namespace string `json:"namespace"`
+			ID        string `json:"id"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return server.manager.InboxInNamespace(params.Namespace, params.ID)
 	case "kill":
 		var params struct {
 			Namespace string `json:"namespace"`

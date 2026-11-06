@@ -122,6 +122,9 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	events := newEventEmitter(eventSink)
 	for turn := 1; ; turn++ {
 		runtime.processControls(ctx, contextState, request.Control)
+		if _, err := runtime.injectSteering(contextState, session); err != nil {
+			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
+		}
 		if runtime.maxTurns > 0 && turn > runtime.maxTurns {
 			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, ErrMaxTurns
 		}
@@ -150,6 +153,13 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 		contextState.append(assistant)
 		if len(assistant.ToolCalls) == 0 {
 			runtime.processControls(ctx, contextState, request.Control)
+			injected, err := runtime.injectSteering(contextState, session)
+			if err != nil {
+				return RunResult{Messages: contextState.messages(), Turns: turn}, err
+			}
+			if injected {
+				continue
+			}
 			return RunResult{
 				FinalMessage: assistant,
 				Messages:     contextState.messages(),
@@ -163,6 +173,46 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 		}
 		contextState.appendAll(toolMessages)
 	}
+}
+
+// Compact applies one manual compaction pass without starting a model turn.
+func (runtime *Runtime) Compact(ctx context.Context, request RunRequest) (RunResult, ControlResult, error) {
+	if strings.TrimSpace(request.Model) == "" {
+		return RunResult{}, ControlResult{Status: ControlFailed, Error: "agent: model is required"}, nil
+	}
+	contextEventSink := runtime.contextEventSink
+	if request.ContextEventSink != nil {
+		contextEventSink = request.ContextEventSink
+	}
+	state := newContextState(runtime.client, request, runtime.contextWindow)
+	state.eventSink = contextEventSink
+	defer state.close()
+	event, err := state.manualCompact(ctx)
+	result := ControlResult{Status: ControlFailed}
+	switch {
+	case err == nil:
+		result.Status = ControlCompleted
+		result.Compaction = &event
+	case errors.Is(err, errContextNoProgress):
+		result.Status = ControlNoChange
+	default:
+		result.Error = err.Error()
+	}
+	return RunResult{Messages: state.messages()}, result, nil
+}
+
+func (runtime *Runtime) injectSteering(state *contextState, session tools.SessionContext) (bool, error) {
+	if session.MessageQueue == nil {
+		return false, nil
+	}
+	messages, err := session.MessageQueue.Take(tools.MessageModeSteer, 1)
+	if err != nil {
+		return false, err
+	}
+	for _, message := range messages {
+		state.append(llm.Message{Role: llm.RoleUser, Content: message.Content})
+	}
+	return len(messages) > 0, nil
 }
 
 func (runtime *Runtime) processControls(

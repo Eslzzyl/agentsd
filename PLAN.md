@@ -14,7 +14,7 @@
 - **Headless & Zero-baggage**：彻底剥离传统交互型工具（如 Codex）面向人类肉眼设计的复杂包袱（无 TUI 依赖、无审批弹窗、全自动化、纯 Event 流驱动）。
 - **Model-pluggable**：模型适配层可插拔，兼容主流商业与开源模型，鼓励使用低成本高效能的模型（如高性价比的 GPT、DeepSeek）充当并发苦力工。
 - **Multi-agent & Full-duplex**：原生支持多个 Agent 并发运行，支持父子级与同级 Subagent 之间的全双工、非阻塞协同通信。
-- **Observable & Modular GUI**：以不可变事件（Event Log）为核心，CLI 提供标准查询与流式跟踪；同时支持独立的、可选的人类 GUI 监控面板作为外部客户端连入，实现可视化全局观察。
+- **Observable & Modular GUI**：以不可变事件（Event Log）为核心，CLI 提供标准查询与流式跟踪；同时支持独立的、可选的基于 GPU 渲染的桌面 GUI 监控应用作为外部客户端连入，实现可视化全局观察。该 GUI 定位为原生桌面应用，浏览器页面不属于当前目标。
 - **Persistent**：Agent 的运行状态和执行历史持久化，支持故障恢复。
 - **Lightweight**：优先采用轻量级实现，以单机 Go Goroutine 为起点，控制资源消耗，并预留分布式演进能力。
 
@@ -60,7 +60,7 @@
 
 ```text
   [ 7×24 个人助理 ]           [ 人类开发者 ]               [ 人类观察者 ]
-  (外部 Agent，调接口)      (终端 CLI: agents ps)       (模块化 Web/GUI 界面)
+  (外部 Agent，调接口)      (终端 CLI: agents ps)       (GPU 渲染桌面 GUI 界面)
            \                       |                       /
             \                      |                      /
              ▼                     ▼                     ▼
@@ -89,25 +89,24 @@
 * **传输层**：全平台统一采用 **Unix Domain Socket (UDS)**。
   * Windows 10 (Build 17063+) 原生支持 `AF_UNIX`，Go 语言自 1.12 起标准库 `net.Listen("unix", ...)` 原生跨平台兼容。
   * 弃用 Windows Named Pipe 设想，实现 100% 跨平台统一套接字抽象，免除端口冲突、防火墙弹窗与权限裸奔隐患。
-  * 客户端 SDK 抽象 Endpoint 参数（默认为 `unix:///.../agentsd.sock`，允许配置 `ws://ip:port`，为未来本地调云端预留扩展能力）。
+  * 客户端 SDK 抽象 Endpoint 参数（默认为 `unix:///.../agentsd.sock`，允许未来配置网络 WebSocket endpoint，为远程客户端预留扩展能力）。
 * **协议层**：采用 **WebSocket（运行于 UDS 之上）**。
   * 单连接全双工：一条连接同时承担指令请求、双向流式数据传输与实时插话，避免“一条读、一条写”的连接割裂。
   * 统一协议帧：借鉴轻量 JSON-RPC / 消息帧封装，CLI、外部助理与 GUI 仪表盘均通过同一套协议既接收事件推送，又实时反向注入控制指令。
 
 ### 4.2 内部通信（父子 Agent 直接通信、Subagent 兄弟通信）
 
-所有受管 Agent 运行在同一个 Go 进程的不同 Goroutine 中，采用参考 IRC 风格的**进程内纯内存消息总线（IrcBus）**。
+首期消息协作：
+1. Session mailbox 保存 `steer` 与 `follow_up` 队列。
+2. 外部 CLI/RPC 发送消息后立即返回投递回执。
+3. Agent 在当前工具阶段结束后的模型请求中接收 `steer`。
+4. Agent idle 后收到消息时启动新一轮模型调用。
+5. Agent 调用 `wait` 工具后进入等待状态，收到消息时直接返回工具结果。
 
-* **发后即忘（Fire-and-forget）**：`send(to, message)` 绝不阻塞等待对方模型推理，消息交由总线后立即返回投递回执（`outcome`）。
-* **全双工事件驱动与三态消费**：
-  1. **接收方处于 IDLE / WAITING 状态**：总线立即触发一轮新的 **Wake Turn（唤醒推理）**。
-  2. **接收方处于 BUSY 状态（正在流式推理或执行工具）**：
-     * **来自父级或外部调用方的消息** -> 视为 **`Steer`（实时操舵打断）**，在推理循环或工具等待间隙高优先级介入纠偏。
-     * **来自同级 Peer 的消息** -> 视为 **`Aside`（旁白插话）**，暂存并延迟到当前步骤边界（Step Boundary，即当前工具执行完成）平滑并入上下文，不损坏原子工具执行。
-  3. **接收方主动调用 `wait` 工具中**：总线直接 `resolve` 等待器，`wait` 工具立即返回新消息。
-* **Agent 内置工具**：
-  * `send(to, message)`：向指定 Agent ID、跨空间路径 `[namespace]/[id]` 或 `"all"` 广播消息。
-  * `wait(timeout)`：主动让出资源，进入等待状态，直到有新消息或任务完成唤醒。
+后续协作能力：
+1. 进程内 `IrcBus` 负责 Agent 间寻址和投递。
+2. `Aside` 承载后台通知与同级 Agent 消息。
+3. `send` 工具负责模型驱动的 Agent 间通信。
 
 ---
 
@@ -115,9 +114,10 @@
 
 ### 5.1 事件分类
 
-- **生命周期**：`agent.started`, `agent.waiting`, `agent.completed`, `agent.failed`
+- **生命周期**：`agent.started`, `agent.resumed`, `agent.idle`, `session.waiting`, `session.woken`, `agent.completed`, `agent.failed`, `agent.canceled`
 - **推理与执行**：`turn.started`, `turn.completed`, `llm.requested`, `llm.completed`, `tool.started`, `tool.completed`, `tool.failed`
-- **通信与协同**：`message.received`, `message.sent`, `steer.injected`, `aside.queued`
+- **通信与协同**：`message.queued`, `message.delivered`, `message.wait_consumed`
+- **多订阅者**：同一 Session 可同时存在多个订阅者；每个订阅者独立接收该 Session 的事件副本。
 
 ### 5.2 存储与查询原则
 
@@ -128,11 +128,10 @@
     ```json
     {"type":"session.header","id":"<uuid>","namespace":"agentsd","model":"gpt-4o-mini","task":"执行代码重构","workspace":"/path/to/cwd","started_at":"2026-11-06T03:00:00Z"}
     ```
-  - **Line 2 ~ N-1 (Events)**：执行全生命周期不可变事件序列（`turn.started`, `tool.started`, `tool.completed` 等），纯追加写入。事件携带短 ID（如 Base62 生成）。
-  - **Line N (Termination)**：终止事件（`agent.completed`, `agent.failed`, `agent.canceled`），包含耗时、最终报告或错误信息。
+  - **Line 2 ~ N (Events)**：执行全生命周期不可变事件序列，纯追加写入。事件携带短 ID。
 - **超大内容分离引用**：大型工具输出与文件使用已有的全局 Blob 存储（`~/.agentsd/artifacts/<sha256>.artifact`），事件中仅保存哈希/路径引用。
 - **Crash 自愈与快速恢复（Recovery）**：
-  - 服务重启时，如果内存中未跟踪某个 Session，但磁盘 `.jsonl` 最后一行既不是 `agent.completed` 也不是 `agent.failed`，系统自动向末尾追加 `agent.failed`（标记 daemon 异常退出）实现无损自愈。
+  - 服务重启时，`agent.idle` 保留 idle 状态；其余未完成 Session 追加 `agent.failed`，标记 daemon 异常退出。
   - 查询状态（如 `agents ps`）时无需解析全量事件，直接读取 Line 1 与文件末尾若干字节即可快速提取状态，无需维护额外的辅助索引文件。
 
 ---
@@ -164,9 +163,8 @@ agents namespace list
 
 **消息与协同**
 ```bash
-agents send <id> "中途纠偏：不要改动现有的导出函数"
-agents inbox <id>
-agents wait <id>
+agents send -n <namespace> [--mode steer|follow-up] <id> "中途调整任务方向"
+agents inbox -n <namespace> <id>
 ```
 
 **观测与流式跟踪**
@@ -186,7 +184,7 @@ agents show <event-id>
 为满足人类用户对任务大局的直观把控，系统提供**解耦的模块化 GUI 界面**：
 
 - **无头独立**：`agentsd` 本身纯无头运行，不绑定任何 GUI 框架依赖。
-- **纯客户端连接**：GUI 作为普通的 WebSocket 客户端连接到 `agentsd` 的 UDS 或网络端口。
+- **纯客户端连接**：GUI 是基于 GPU 渲染的桌面应用，默认通过 UDS 连接 `agentsd`；网络 WebSocket 端口用于未来远程客户端。
 - **功能侧重**：只读为主，展示多 Agent 拓扑关系、活跃协程状态、实时 Token 流与工具执行树；按需提供一键中断/插话按钮。
 
 ---
@@ -234,14 +232,19 @@ agents show <event-id>
 5. 实现 CLI 的 `spawn`、`ps`（支持 `-n` / `-A` 与 UUID 短前缀显示）、`inspect`（前缀匹配）、`kill`。
 6. 实现启动文件锁与单实例保护。
 
-### 阶段三：全双工内部通信总线（IrcBus）
-实现多 Agent 间的全双工与非阻塞干预：
-1. 实现进程内单例 `IrcBus` 与 Agent 邮箱。
-2. 实现 `Steer`（实时操舵打断）与 `Aside`（步骤间平滑并入）。
-3. 向受管 Agent 注入 `send` 与 `wait` 工具。
-4. CLI 对接 `agents send` 实现外部中途插话。
+### 阶段三：Session Mailbox 与消息协作
+当前实现：
+1. Session mailbox 支持 `steer` 与 `follow_up` 两类消息。
+2. Agent idle 后收到消息时启动新一轮模型调用。
+3. 模型可通过 `wait` 工具等待 mailbox 消息。
+4. CLI 与 RPC 支持 `agents send`、`agents inbox`。
+
+后续工作：
+1. 实现进程内 `IrcBus` 与 Agent 间消息路由。
+2. 增加 `Aside` 消息与后台任务通知。
+3. 增加即时工具中断与 `agents wait`。
 
 ### 阶段四：流式观测与模块化 GUI
-1. 实现 WebSocket 实时事件广播，完成 `agents activity <id> --follow`。
-2. 搭建独立的、可选的轻量 Web 监控看板。
+1. 实现 WebSocket 实时事件广播，支持同一 Session 的多个监听者，完成 `agents activity <id> --follow`。
+2. 搭建独立的、可选的 GPU 渲染桌面监控应用。
 3. 完善 Session 分支历史与故障恢复机制。

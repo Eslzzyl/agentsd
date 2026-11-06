@@ -32,6 +32,54 @@ func (client *scriptedClient) Stream(context.Context, llm.Request, func(llm.Even
 	return errors.New("stream is not used")
 }
 
+type testMessageQueue struct {
+	messages []tools.QueuedMessage
+}
+
+func (queue *testMessageQueue) Take(mode tools.MessageMode, limit int) ([]tools.QueuedMessage, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	for index, message := range queue.messages {
+		if message.Mode != mode {
+			continue
+		}
+		queue.messages = append(queue.messages[:index], queue.messages[index+1:]...)
+		return []tools.QueuedMessage{message}, nil
+	}
+	return nil, nil
+}
+
+func (queue *testMessageQueue) Wait(context.Context, tools.MessageFilter, time.Duration) (tools.QueuedMessage, bool, error) {
+	return tools.QueuedMessage{}, false, nil
+}
+
+type runtimeWaitQueue struct {
+	messages chan tools.QueuedMessage
+}
+
+func (queue *runtimeWaitQueue) Take(tools.MessageMode, int) ([]tools.QueuedMessage, error) {
+	return nil, nil
+}
+
+func (queue *runtimeWaitQueue) Wait(ctx context.Context, _ tools.MessageFilter, timeout time.Duration) (tools.QueuedMessage, bool, error) {
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	if timeout > 0 {
+		timer = time.NewTimer(timeout)
+		defer timer.Stop()
+		timerC = timer.C
+	}
+	select {
+	case message := <-queue.messages:
+		return message, true, nil
+	case <-timerC:
+		return tools.QueuedMessage{}, false, nil
+	case <-ctx.Done():
+		return tools.QueuedMessage{}, false, ctx.Err()
+	}
+}
+
 type controlClient struct {
 	firstResponse chan struct{}
 	mainCalls     int
@@ -67,6 +115,43 @@ func (client *controlClient) Complete(_ context.Context, request llm.Request) (l
 		Role:    llm.RoleAssistant,
 		Content: "done",
 	}}}}, nil
+}
+
+type steeringClient struct {
+	queue    *testMessageQueue
+	requests []llm.Request
+	calls    int
+}
+
+func (client *steeringClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
+	client.requests = append(client.requests, request)
+	client.calls++
+	if client.calls == 1 {
+		client.queue.messages = append(client.queue.messages, tools.QueuedMessage{
+			ID:      "steer-1",
+			Mode:    tools.MessageModeSteer,
+			Content: "change direction",
+		})
+		return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      "lookup",
+					Arguments: `{}`,
+				},
+			}},
+		}}}}, nil
+	}
+	return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: "done",
+	}}}}, nil
+}
+
+func (client *steeringClient) Stream(context.Context, llm.Request, func(llm.Event) error) error {
+	return errors.New("stream is not used")
 }
 
 func (client *controlClient) Stream(context.Context, llm.Request, func(llm.Event) error) error {
@@ -174,6 +259,109 @@ func TestRuntimeRunsToolCallsUntilFinalMessage(t *testing.T) {
 		t.Fatalf("requests = %#v", client.requests)
 	}
 }
+
+func TestRuntimeInjectsSteeringAfterToolBatch(t *testing.T) {
+	queue := &testMessageQueue{}
+	client := &steeringClient{queue: queue}
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result: "ok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runtime.Run(context.Background(), RunRequest{
+		Model:    "test-model",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "run"}},
+		Session:  &tools.SessionContext{MessageQueue: queue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FinalMessage.Content != "done" || len(client.requests) != 2 {
+		t.Fatalf("result = %#v, requests = %#v", result, client.requests)
+	}
+	secondMessages := client.requests[1].Messages
+	if len(secondMessages) != 4 {
+		t.Fatalf("second request messages = %#v", secondMessages)
+	}
+	last := secondMessages[len(secondMessages)-1]
+	if last.Role != llm.RoleUser || last.Content != "change direction" {
+		t.Fatalf("steering message = %#v", last)
+	}
+}
+
+func TestRuntimeWaitToolWakesOnMessage(t *testing.T) {
+	client := &scriptedClient{responses: []llm.Response{
+		{Choices: []llm.Choice{{Message: llm.Message{
+			Role: llm.RoleAssistant,
+			ToolCalls: []llm.ToolCall{{
+				ID:       "wait-1",
+				Type:     "function",
+				Function: llm.FunctionCall{Name: "wait", Arguments: `{}`},
+			}},
+		}}}},
+		{Choices: []llm.Choice{{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}}},
+	}}
+	registry, err := tools.NewRegistry(tools.WaitTool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := &runtimeWaitQueue{messages: make(chan tools.QueuedMessage, 1)}
+	waiting := make(chan struct{})
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultCh := make(chan struct {
+		result RunResult
+		err    error
+	}, 1)
+	go func() {
+		result, runErr := runtime.Run(context.Background(), RunRequest{
+			Model:    "test-model",
+			Messages: []llm.Message{{Role: llm.RoleUser, Content: "wait for input"}},
+			Session: &tools.SessionContext{
+				MessageQueue: queue,
+				OnWaiting: func(value bool) {
+					if value {
+						close(waiting)
+					}
+				},
+			},
+		})
+		resultCh <- struct {
+			result RunResult
+			err    error
+		}{result: result, err: runErr}
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(time.Second):
+		t.Fatal("wait tool did not start waiting")
+	}
+	queue.messages <- tools.QueuedMessage{ID: "wait-message", Mode: tools.MessageModeSteer, Content: "message arrived"}
+	outcome := <-resultCh
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.result.FinalMessage.Content != "done" || len(outcome.result.Messages) != 4 {
+		t.Fatalf("result = %#v", outcome.result)
+	}
+	if !strings.Contains(outcome.result.Messages[2].Content, "message arrived") {
+		t.Fatalf("wait result = %#v", outcome.result.Messages[2])
+	}
+}
+
 func TestRuntimeProcessesControlAtTurnBoundary(t *testing.T) {
 	client := &controlClient{firstResponse: make(chan struct{})}
 	toolRelease := make(chan struct{})

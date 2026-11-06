@@ -31,6 +31,10 @@ func main() {
 		err = runKill(os.Args[2:])
 	case "compact":
 		err = runCompact(os.Args[2:])
+	case "send":
+		err = runSend(os.Args[2:])
+	case "inbox":
+		err = runInbox(os.Args[2:])
 	case "namespace":
 		err = runNamespace(os.Args[2:])
 	default:
@@ -180,6 +184,68 @@ func runCompact(args []string) error {
 		*jsonOutput,
 		timeout,
 	)
+}
+
+func runSend(args []string) error {
+	flags := flag.NewFlagSet("send", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
+	mode := flags.String("mode", "steer", "message mode: steer or follow-up")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() < 2 {
+		return fmt.Errorf("usage: agents send [--socket path] [-n namespace] [--mode steer|follow-up] <id> <message>")
+	}
+	id := flags.Arg(0)
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(id, "/") {
+		return fmt.Errorf("namespace is required")
+	}
+	params, err := json.Marshal(struct {
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+		Mode      string `json:"mode"`
+		Content   string `json:"content"`
+	}{
+		Namespace: *namespace,
+		ID:        id,
+		Mode:      *mode,
+		Content:   strings.Join(flags.Args()[1:], " "),
+	})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "session.send", Params: params}, *jsonOutput)
+}
+
+func runInbox(args []string) error {
+	flags := flag.NewFlagSet("inbox", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("usage: agents inbox [--socket path] [-n namespace] <id>")
+	}
+	id := flags.Arg(0)
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(id, "/") {
+		return fmt.Errorf("namespace is required")
+	}
+	params, err := json.Marshal(struct {
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+	}{Namespace: *namespace, ID: id})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "session.inbox", Params: params}, *jsonOutput)
 }
 
 func runNamespace(args []string) error {
@@ -354,6 +420,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|namespace> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|namespace> [options]")
 	os.Exit(2)
 }
