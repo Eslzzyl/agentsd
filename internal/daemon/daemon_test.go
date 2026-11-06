@@ -42,6 +42,17 @@ func (contextEventRunner) Run(_ context.Context, request agent.RunRequest) (agen
 	}
 	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
 }
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "ad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(directory)
+	})
+	return filepath.Join(directory, "s")
+}
 
 func TestServerSpawnAndInspect(t *testing.T) {
 	factory := func(string) (Runner, string, error) {
@@ -52,7 +63,7 @@ func TestServerSpawnAndInspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(manager)
-	socketPath := filepath.Join(t.TempDir(), "agentsd.sock")
+	socketPath := testSocketPath(t)
 	listener, err := ListenUnix(socketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +147,7 @@ func TestCallReturnsDaemonError(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(manager)
-	socketPath := filepath.Join(t.TempDir(), "agentsd.sock")
+	socketPath := testSocketPath(t)
 	listener, err := ListenUnix(socketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -264,7 +275,7 @@ func TestServerNamespaceCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(manager)
-	socketPath := filepath.Join(t.TempDir(), "agentsd.sock")
+	socketPath := testSocketPath(t)
 	listener, err := ListenUnix(socketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +339,7 @@ func TestServerSpawnRequiresNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(manager)
-	socketPath := filepath.Join(t.TempDir(), "agentsd.sock")
+	socketPath := testSocketPath(t)
 	listener, err := ListenUnix(socketPath)
 	if err != nil {
 		t.Fatal(err)
