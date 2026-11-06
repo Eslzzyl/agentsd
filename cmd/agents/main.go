@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agentsd/internal/config"
@@ -28,6 +29,8 @@ func main() {
 		err = runInspect(os.Args[2:])
 	case "kill":
 		err = runKill(os.Args[2:])
+	case "namespace":
+		err = runNamespace(os.Args[2:])
 	default:
 		usage()
 	}
@@ -41,89 +44,244 @@ func runSpawn(args []string) error {
 	flags := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	model := flags.String("model", "", "model ID")
 	task := flags.String("task", "", "agent task")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	_ = jsonOutput
+	if strings.TrimSpace(*namespace) == "" {
+		return fmt.Errorf("namespace is required")
+	}
 	params, err := json.Marshal(struct {
-		Model string `json:"model"`
-		Task  string `json:"task"`
-	}{Model: *model, Task: *task})
+		Namespace string `json:"namespace"`
+		Model     string `json:"model"`
+		Task      string `json:"task"`
+	}{Namespace: *namespace, Model: *model, Task: *task})
 	if err != nil {
 		return err
 	}
-	return callAndPrint(*socket, daemon.Request{Method: "spawn", Params: params})
+	return callAndPrint(*socket, daemon.Request{Method: "spawn", Params: params}, *jsonOutput)
 }
 
 func runPS(args []string) error {
 	flags := flag.NewFlagSet("ps", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required unless -A)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required unless -A)")
+	var allNamespaces bool
+	flags.BoolVar(&allNamespaces, "A", false, "list all namespaces")
+	flags.BoolVar(&allNamespaces, "all-namespaces", false, "list all namespaces")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	_ = jsonOutput
-	return callAndPrint(*socket, daemon.Request{Method: "ps"})
+	if !allNamespaces && strings.TrimSpace(*namespace) == "" {
+		return fmt.Errorf("namespace is required; use -A to list all namespaces")
+	}
+	params, err := json.Marshal(struct {
+		Namespace     string `json:"namespace"`
+		AllNamespaces bool   `json:"all_namespaces"`
+	}{Namespace: *namespace, AllNamespaces: allNamespaces})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "ps", Params: params}, *jsonOutput)
 }
 
 func runInspect(args []string) error {
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	_ = jsonOutput
 	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: agents inspect [--socket path] <id>")
+		return fmt.Errorf("usage: agents inspect [--socket path] [-n namespace] <id>")
+	}
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(flags.Arg(0), "/") {
+		return fmt.Errorf("namespace is required")
 	}
 	params, err := json.Marshal(struct {
-		ID string `json:"id"`
-	}{ID: flags.Arg(0)})
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+	}{Namespace: *namespace, ID: flags.Arg(0)})
 	if err != nil {
 		return err
 	}
-	return callAndPrint(*socket, daemon.Request{Method: "inspect", Params: params})
+	return callAndPrint(*socket, daemon.Request{Method: "inspect", Params: params}, *jsonOutput)
 }
 
 func runKill(args []string) error {
 	flags := flag.NewFlagSet("kill", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace (required)")
+	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	_ = jsonOutput
 	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: agents kill [--socket path] <id>")
+		return fmt.Errorf("usage: agents kill [--socket path] [-n namespace] <id>")
+	}
+	if strings.TrimSpace(*namespace) == "" && !strings.Contains(flags.Arg(0), "/") {
+		return fmt.Errorf("namespace is required")
 	}
 	params, err := json.Marshal(struct {
-		ID string `json:"id"`
-	}{ID: flags.Arg(0)})
+		Namespace string `json:"namespace"`
+		ID        string `json:"id"`
+	}{Namespace: *namespace, ID: flags.Arg(0)})
 	if err != nil {
 		return err
 	}
-	return callAndPrint(*socket, daemon.Request{Method: "kill", Params: params})
+	return callAndPrint(*socket, daemon.Request{Method: "kill", Params: params}, *jsonOutput)
 }
 
-func callAndPrint(socket string, request daemon.Request) error {
+func runNamespace(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: agents namespace <create|delete|rename|list>")
+	}
+	switch args[0] {
+	case "create":
+		return runNamespaceCreate(args[1:])
+	case "delete":
+		return runNamespaceDelete(args[1:])
+	case "rename":
+		return runNamespaceRename(args[1:])
+	case "list":
+		return runNamespaceList(args[1:])
+	default:
+		return fmt.Errorf("usage: agents namespace <create|delete|rename|list>")
+	}
+}
+
+func runNamespaceCreate(args []string) error {
+	flags := flag.NewFlagSet("namespace create", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("usage: agents namespace create [--socket path] <name>")
+	}
+	params, err := json.Marshal(map[string]string{"name": flags.Arg(0)})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "namespace.create", Params: params}, *jsonOutput)
+}
+
+func runNamespaceDelete(args []string) error {
+	flags := flag.NewFlagSet("namespace delete", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	force := flags.Bool("force", false, "delete namespace and all sessions")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("usage: agents namespace delete [--socket path] [--force] <name>")
+	}
+	params, err := json.Marshal(struct {
+		Name  string `json:"name"`
+		Force bool   `json:"force"`
+	}{Name: flags.Arg(0), Force: *force})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "namespace.delete", Params: params}, *jsonOutput)
+}
+
+func runNamespaceRename(args []string) error {
+	flags := flag.NewFlagSet("namespace rename", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 2 {
+		return fmt.Errorf("usage: agents namespace rename [--socket path] <from> <to>")
+	}
+	params, err := json.Marshal(struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}{From: flags.Arg(0), To: flags.Arg(1)})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "namespace.rename", Params: params}, *jsonOutput)
+}
+
+func runNamespaceList(args []string) error {
+	flags := flag.NewFlagSet("namespace list", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("usage: agents namespace list [--socket path]")
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "namespace.list"}, *jsonOutput)
+}
+
+func callAndPrint(socket string, request daemon.Request, jsonOutput bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result, err := daemon.Call(ctx, socket, request)
 	if err != nil {
 		return err
 	}
+	if request.Method == "ps" && !jsonOutput {
+		return printPS(result)
+	}
+	if request.Method == "namespace.list" && !jsonOutput {
+		return printNamespaces(result)
+	}
 	var formatted bytes.Buffer
 	if err := json.Indent(&formatted, result, "", "  "); err != nil {
 		return err
 	}
 	fmt.Println(formatted.String())
+	return nil
+}
+
+func printPS(result []byte) error {
+	var agents []daemon.AgentSummary
+	if err := json.Unmarshal(result, &agents); err != nil {
+		return err
+	}
+	fmt.Printf("%-8s %-16s %-10s %-24s %s\n", "ID", "NAMESPACE", "STATUS", "MODEL", "TASK")
+	for _, agent := range agents {
+		id := agent.ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		fmt.Printf("%-8s %-16s %-10s %-24s %s\n", id, agent.Namespace, agent.Status, agent.Model, agent.Task)
+	}
+	return nil
+}
+
+func printNamespaces(result []byte) error {
+	var namespaces []string
+	if err := json.Unmarshal(result, &namespaces); err != nil {
+		return err
+	}
+	for _, namespace := range namespaces {
+		fmt.Println(namespace)
+	}
 	return nil
 }
 
@@ -136,6 +294,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|namespace> [options]")
 	os.Exit(2)
 }

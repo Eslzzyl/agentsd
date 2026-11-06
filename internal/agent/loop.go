@@ -58,6 +58,7 @@ type RunRequest struct {
 	MaxTokens *int
 	ExtraBody map[string]any
 	Session   *tools.SessionContext
+	EventSink tools.EventSink
 }
 
 type RunResult struct {
@@ -77,7 +78,11 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	}
 	messages := append([]llm.Message(nil), request.Messages...)
 	definitions := runtime.tools.Definitions()
-	events := newEventEmitter(runtime.eventSink)
+	eventSink := runtime.eventSink
+	if request.EventSink != nil {
+		eventSink = request.EventSink
+	}
+	events := newEventEmitter(eventSink)
 	for turn := 1; ; turn++ {
 		if runtime.maxTurns > 0 && turn > runtime.maxTurns {
 			return RunResult{Messages: messages, Turns: turn - 1}, ErrMaxTurns

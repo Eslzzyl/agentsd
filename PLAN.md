@@ -39,7 +39,7 @@
 
 系统统一采用极简、无协议头负担的路径格式对 Agent 进行寻址（不引入 `agent://` 伪协议）：
 
-- **同命名空间私信**：直接指定目标 `<session_id>`（如 UUID 或前缀短哈希 `4a8b2c91`）。系统自动补全当前上下文的命名空间。
+- **同命名空间私信**：直接指定目标 `<session_id>`（如 UUID 或前缀短哈希 `4a8b2c91`）。调用方必须明确提供当前命名空间。
 - **同命名空间广播**：指定 `"all"`，向当前命名空间内的所有活跃受管 Agent 广播。
 - **跨命名空间寻址（可选扩展）**：采用 `[namespace]/<session_id>` 路径格式（如 `frontend/4a8b2c91`）。
 
@@ -47,7 +47,7 @@
 
 ### 2.3 Namespace & Session
 
-- **Namespace（命名空间）**：**项目/工作区级的逻辑协作域**（长生命周期、相对稳定，如 `agentsd`、`default`、`frontend-app`）。
+- **Namespace（命名空间）**：**项目/工作区级的逻辑协作域**（长生命周期、相对稳定，如 `agentsd`、`frontend-app`）。
   - 磁盘组织：在存储层按 Namespace 划分目录 `sessions/<namespace>/`，避免随单次任务无限制膨胀。
   - 作用边界：同一 Namespace 下的 Agent 具备相互发现与协作可见性；总线内部广播消息 `send("all", ...)` 严格局限在当前 Namespace 内；跨 Namespace 需显式指定。
 - **Session（会话）**：受管 Agent 执行的**不可变历史与状态持久化单元**（短生命周期）。
@@ -143,12 +143,21 @@ CLI 既是外部 Agent（个人助理）调度的主要抓手，也是人类工�
 
 **任务与生命周期**
 ```bash
-agents spawn --model gpt-4o-mini --task "执行代码重构" [-n <namespace>]
-agents ps [-n <namespace>] [-A/--all-namespaces] # 表格默认截取 UUID 前 8 位展示
-agents inspect <id>                             # 支持 UUID 前缀模糊匹配
-agents kill <id>                                # 支持 UUID 前缀模糊匹配
+agents spawn --model gpt-4o-mini --task "执行代码重构" -n <namespace>
+agents ps -n <namespace>                    # 表格默认截取 UUID 前 8 位展示
+agents ps -A/--all-namespaces
+agents inspect -n <namespace> <id>             # 支持 UUID 前缀模糊匹配
+agents kill -n <namespace> <id>                # 支持 UUID 前缀模糊匹配
 agents pause <id>
 agents resume <id>
+```
+
+**命名空间管理**
+```bash
+agents namespace create <namespace>
+agents namespace delete [--force] <namespace>
+agents namespace rename <from> <to>
+agents namespace list
 ```
 
 **消息与协同**

@@ -7,9 +7,10 @@ import (
 )
 
 type Paths struct {
-	Directory  string
-	ConfigFile string
-	AuthFile   string
+	Directory         string
+	ConfigFile        string
+	AuthFile          string
+	SessionsDirectory string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -26,9 +27,10 @@ func DefaultPaths() (Paths, error) {
 func PathsForHome(home string) Paths {
 	directory := filepath.Join(home, ".agentsd")
 	return Paths{
-		Directory:  directory,
-		ConfigFile: filepath.Join(directory, "config.toml"),
-		AuthFile:   filepath.Join(directory, "auth.json"),
+		Directory:         directory,
+		ConfigFile:        filepath.Join(directory, "config.toml"),
+		AuthFile:          filepath.Join(directory, "auth.json"),
+		SessionsDirectory: filepath.Join(directory, "sessions"),
 	}
 }
 

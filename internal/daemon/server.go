@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 )
 
 type Server struct {
@@ -61,31 +62,84 @@ func (server *Server) handleRequest(request Request) (any, error) {
 	switch request.Method {
 	case "spawn":
 		var params struct {
-			Model string `json:"model"`
-			Task  string `json:"task"`
+			Namespace string `json:"namespace"`
+			Model     string `json:"model"`
+			Task      string `json:"task"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return server.manager.Spawn(params.Model, params.Task)
+		return server.manager.SpawnInNamespace(params.Namespace, params.Model, params.Task)
+	case "namespace.create":
+		var params struct {
+			Name string `json:"name"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := server.manager.CreateNamespace(params.Name); err != nil {
+			return nil, err
+		}
+		return NamespaceResult{Name: params.Name}, nil
+	case "namespace.delete":
+		var params struct {
+			Name  string `json:"name"`
+			Force bool   `json:"force"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := server.manager.DeleteNamespace(params.Name, params.Force); err != nil {
+			return nil, err
+		}
+		return NamespaceResult{Name: params.Name}, nil
+	case "namespace.rename":
+		var params struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := server.manager.RenameNamespace(params.From, params.To); err != nil {
+			return nil, err
+		}
+		return NamespaceRenameResult{From: params.From, To: params.To}, nil
+	case "namespace.list":
+		return server.manager.ListNamespaces()
 	case "ps":
-		return server.manager.List(), nil
+		var params struct {
+			Namespace     string `json:"namespace"`
+			AllNamespaces bool   `json:"all_namespaces"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		if params.AllNamespaces {
+			return server.manager.ListAll(), nil
+		}
+		if strings.TrimSpace(params.Namespace) == "" {
+			return nil, errors.New("session: namespace is required")
+		}
+		return server.manager.ListInNamespace(params.Namespace), nil
 	case "inspect":
 		var params struct {
-			ID string `json:"id"`
+			Namespace string `json:"namespace"`
+			ID        string `json:"id"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return server.manager.Inspect(params.ID)
+		return server.manager.InspectInNamespace(params.Namespace, params.ID)
 	case "kill":
 		var params struct {
-			ID string `json:"id"`
+			Namespace string `json:"namespace"`
+			ID        string `json:"id"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return server.manager.Kill(params.ID)
+		return server.manager.KillInNamespace(params.Namespace, params.ID)
 	default:
 		return nil, errors.New("daemon: unknown method " + request.Method)
 	}

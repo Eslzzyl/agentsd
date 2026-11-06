@@ -214,11 +214,7 @@ func parsePatchHunks(diff string) [][]patchHunkLine {
 		if row == "\\ No newline at end of file" || row == "…" {
 			continue
 		}
-		if row == "" && len(current) == 0 {
-			continue
-		}
-		if len(row) == 0 {
-			current = append(current, patchHunkLine{kind: ' ', text: ""})
+		if row == "" {
 			continue
 		}
 		kind := row[0]

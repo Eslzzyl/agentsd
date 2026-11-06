@@ -11,11 +11,15 @@ import (
 
 	"agentsd/internal/config"
 	"agentsd/internal/daemon"
+	"agentsd/internal/session"
 )
 
 func main() {
 	paths, err := config.DefaultPaths()
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := paths.EnsureDirectory(); err != nil {
 		log.Fatal(err)
 	}
 	flags := flag.NewFlagSet("agentsd", flag.ExitOnError)
@@ -24,7 +28,11 @@ func main() {
 	authPath := flags.String("auth", paths.AuthFile, "auth JSON path")
 	flags.Parse(os.Args[1:])
 
-	manager, err := daemon.NewManager((daemon.ConfigFactory{ConfigPath: *configPath, AuthPath: *authPath}).New)
+	store, err := session.NewStore(paths.SessionsDirectory)
+	if err != nil {
+		log.Fatal(err)
+	}
+	manager, err := daemon.NewManager((daemon.ConfigFactory{ConfigPath: *configPath, AuthPath: *authPath}).New, store)
 	if err != nil {
 		log.Fatal(err)
 	}
