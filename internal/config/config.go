@@ -12,34 +12,34 @@ import (
 )
 
 type Config struct {
-	Provider      string                    `toml:"provider"`
-	Model         string                    `toml:"model"`
-	ThinkingLevel string                    `toml:"thinking_level,omitempty"`
-	Providers     map[string]ProviderConfig `toml:"providers"`
-	Search        SearchConfig              `toml:"search,omitempty"`
-	Fetch         FetchConfig               `toml:"fetch,omitempty"`
+	Provider      string                    `toml:"provider" json:"provider"`
+	Model         string                    `toml:"model" json:"model"`
+	ThinkingLevel string                    `toml:"thinking_level,omitempty" json:"thinking_level,omitempty"`
+	Providers     map[string]ProviderConfig `toml:"providers" json:"providers"`
+	Search        SearchConfig              `toml:"search,omitempty" json:"search,omitempty"`
+	Fetch         FetchConfig               `toml:"fetch,omitempty" json:"fetch,omitempty"`
 }
 
 type SearchConfig struct {
-	Enabled   *bool                           `toml:"enabled,omitempty"`
-	Timeout   int                             `toml:"timeout_seconds,omitempty"`
-	MaxResult int                             `toml:"max_results,omitempty"`
-	Order     []string                        `toml:"order,omitempty"`
-	Providers map[string]SearchProviderConfig `toml:"providers,omitempty"`
+	Enabled   *bool                           `toml:"enabled,omitempty" json:"enabled,omitempty"`
+	Timeout   int                             `toml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
+	MaxResult int                             `toml:"max_results,omitempty" json:"max_results,omitempty"`
+	Order     []string                        `toml:"order,omitempty" json:"order,omitempty"`
+	Providers map[string]SearchProviderConfig `toml:"providers,omitempty" json:"providers,omitempty"`
 }
 
 type SearchProviderConfig struct {
-	Enabled  *bool          `toml:"enabled,omitempty"`
-	Endpoint string         `toml:"endpoint,omitempty"`
-	AuthRef  string         `toml:"auth_ref,omitempty"`
-	Model    string         `toml:"model,omitempty"`
-	Options  map[string]any `toml:"options,omitempty"`
+	Enabled  *bool          `toml:"enabled,omitempty" json:"enabled,omitempty"`
+	Endpoint string         `toml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	AuthRef  string         `toml:"auth_ref,omitempty" json:"auth_ref,omitempty"`
+	Model    string         `toml:"model,omitempty" json:"model,omitempty"`
+	Options  map[string]any `toml:"options,omitempty" json:"options,omitempty"`
 }
 
 type FetchConfig struct {
-	Enabled  *bool `toml:"enabled,omitempty"`
-	Timeout  int   `toml:"timeout_seconds,omitempty"`
-	MaxBytes int64 `toml:"max_bytes,omitempty"`
+	Enabled  *bool `toml:"enabled,omitempty" json:"enabled,omitempty"`
+	Timeout  int   `toml:"timeout_seconds,omitempty" json:"timeout_seconds,omitempty"`
+	MaxBytes int64 `toml:"max_bytes,omitempty" json:"max_bytes,omitempty"`
 }
 
 const (
@@ -140,20 +140,20 @@ func (cfg FetchConfig) MaxBodyBytes() int64 {
 }
 
 type ProviderConfig struct {
-	APIType llm.APIType            `toml:"api_type"`
-	BaseURL string                 `toml:"base_url,omitempty"`
-	Models  map[string]ModelConfig `toml:"models"`
+	APIType llm.APIType            `toml:"api_type" json:"api_type"`
+	BaseURL string                 `toml:"base_url,omitempty" json:"base_url,omitempty"`
+	Models  map[string]ModelConfig `toml:"models" json:"models"`
 }
 
 type ModelConfig struct {
-	APIType           llm.APIType    `toml:"api_type,omitempty"`
-	BaseURL           string         `toml:"base_url,omitempty"`
-	RequestModelID    string         `toml:"request_model_id,omitempty"`
-	ContextWindow     int            `toml:"context_window,omitempty"`
-	MaxOutputTokens   int            `toml:"max_output_tokens,omitempty"`
-	SupportsImages    bool           `toml:"supports_images,omitempty"`
-	SupportsStreaming bool           `toml:"supports_streaming,omitempty"`
-	ExtraBody         map[string]any `toml:"extra_body,omitempty"`
+	APIType           llm.APIType    `toml:"api_type,omitempty" json:"api_type,omitempty"`
+	BaseURL           string         `toml:"base_url,omitempty" json:"base_url,omitempty"`
+	RequestModelID    string         `toml:"request_model_id,omitempty" json:"request_model_id,omitempty"`
+	ContextWindow     int            `toml:"context_window,omitempty" json:"context_window,omitempty"`
+	MaxOutputTokens   int            `toml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
+	SupportsImages    bool           `toml:"supports_images,omitempty" json:"supports_images,omitempty"`
+	SupportsStreaming bool           `toml:"supports_streaming,omitempty" json:"supports_streaming,omitempty"`
+	ExtraBody         map[string]any `toml:"extra_body,omitempty" json:"extra_body,omitempty"`
 }
 
 type ResolvedModel struct {

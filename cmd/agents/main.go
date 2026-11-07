@@ -41,6 +41,10 @@ func main() {
 		err = runNamespace(os.Args[2:])
 	case "daemon":
 		err = runDaemon(os.Args[2:])
+	case "config":
+		err = runConfig(os.Args[2:])
+	case "auth":
+		err = runAuth(os.Args[2:])
 	default:
 		usage()
 	}
@@ -498,6 +502,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace|daemon> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace|daemon|config|auth> [options]")
 	os.Exit(2)
 }

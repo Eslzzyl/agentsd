@@ -163,6 +163,24 @@ agents daemon restart [--timeout <duration>] [--force]
 
 `agents daemon start` 以当前用户身份在后台启动 `agentsd`，状态和日志默认写入 `~/.agentsd`。直接运行 `agentsd` 保留前台模式。
 
+
+**配置与认证**
+```bash
+agents config show [--json]
+agents config providers [--json]
+agents config models [--json] [provider]
+agents config search [--json]
+agents config fetch [--json]
+agents config validate [--json]
+agents config set [--config <path>] <path> <value>
+
+agents auth list [--json]
+printf '%s' "$API_KEY" | agents auth set --field api_key <provider>
+agents auth remove <provider>
+```
+
+配置路径使用 `/` 分隔，例如 `providers/gateway/models/gpt-5.6/context_window` 和 `search/providers/brave/endpoint`。
+
 **命名空间管理**
 ```bash
 agents namespace create <namespace>
