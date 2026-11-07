@@ -31,11 +31,7 @@ type chatChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage *chatUsage `json:"usage"`
 }
 
 func (c *Client) Stream(ctx context.Context, req llm.Request, yield func(llm.Event) error) error {
@@ -138,11 +134,7 @@ func (c *Client) Stream(ctx context.Context, req llm.Request, yield func(llm.Eve
 			}
 		}
 		if chunk.Usage != nil {
-			usage := llm.Usage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-			}
+			usage := normalizeUsage(*chunk.Usage)
 			if err := yield(llm.Event{
 				Type:       llm.EventUsage,
 				ResponseID: chunk.ID,

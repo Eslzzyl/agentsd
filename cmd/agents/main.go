@@ -32,6 +32,8 @@ func main() {
 		err = runPS(os.Args[2:])
 	case "inspect":
 		err = runInspect(os.Args[2:])
+	case "stats":
+		err = runStats(os.Args[2:])
 	case "kill":
 		err = runKill(os.Args[2:])
 	case "compact":
@@ -135,6 +137,42 @@ func runInspect(args []string) error {
 		return err
 	}
 	return callAndPrint(*socket, daemon.Request{Method: "inspect", Params: params}, *jsonOutput)
+}
+
+func runStats(args []string) error {
+	flags := flag.NewFlagSet("stats", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	socket := flags.String("socket", defaultSocket(), "Unix socket path")
+	namespace := flags.String("n", "", "namespace")
+	flags.StringVar(namespace, "namespace", "", "namespace")
+	allNamespaces := flags.Bool("A", false, "all namespaces")
+	flags.BoolVar(allNamespaces, "all-namespaces", false, "all namespaces")
+	jsonOutput := flags.Bool("json", false, "print JSON")
+	if err := parseFlags(flags, args); err != nil {
+		return err
+	}
+	if flags.NArg() > 1 {
+		return fmt.Errorf("usage: agents stats [--socket path] [-n namespace] [-A] [<namespace>/<id> | <id>]")
+	}
+	id := ""
+	if flags.NArg() == 1 {
+		id = flags.Arg(0)
+	}
+	if *allNamespaces && (strings.TrimSpace(*namespace) != "" || id != "") {
+		return fmt.Errorf("stats: -A cannot select a namespace or session")
+	}
+	if !*allNamespaces && strings.TrimSpace(*namespace) == "" && !strings.Contains(id, "/") {
+		return fmt.Errorf("namespace is required; use -A for all namespaces")
+	}
+	params, err := json.Marshal(struct {
+		Namespace     string `json:"namespace"`
+		ID            string `json:"id"`
+		AllNamespaces bool   `json:"all_namespaces"`
+	}{Namespace: *namespace, ID: id, AllNamespaces: *allNamespaces})
+	if err != nil {
+		return err
+	}
+	return callAndPrint(*socket, daemon.Request{Method: "stats", Params: params}, *jsonOutput)
 }
 
 func runKill(args []string) error {
@@ -479,6 +517,9 @@ func callAndPrintWithTimeout(
 	if request.Method == "ps" && !jsonOutput {
 		return printPS(result)
 	}
+	if request.Method == "stats" && !jsonOutput {
+		return printStats(result)
+	}
 	if request.Method == "namespace.list" && !jsonOutput {
 		return printNamespaces(result)
 	}
@@ -519,6 +560,22 @@ func printPS(result []byte) error {
 		}
 		fmt.Printf("%-8s %-16s %-10s %-24s %s\n", id, agent.Namespace, agent.Status, agent.Model, agent.Task)
 	}
+	return nil
+}
+func printStats(result []byte) error {
+	var stats daemon.UsageStats
+	if err := json.Unmarshal(result, &stats); err != nil {
+		return err
+	}
+	fmt.Printf("sessions: %d\nrequests: %d\ninput: %d\noutput: %d\ncache_read: %d\ncache_write: %d\ntotal: %d\n",
+		stats.Sessions,
+		stats.Requests,
+		stats.Usage.Input,
+		stats.Usage.Output,
+		stats.Usage.CacheRead,
+		stats.Usage.CacheWrite,
+		stats.Usage.Total,
+	)
 	return nil
 }
 
@@ -570,6 +627,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace|daemon|config|auth> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|stats|kill|compact|send|inbox|activity|namespace|daemon|config|auth> [options]")
 	os.Exit(2)
 }

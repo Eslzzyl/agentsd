@@ -108,6 +108,7 @@ type contextState struct {
 	providerTokens int
 	compactions    int
 	eventSink      ContextEventSink
+	usageRecorder  func(string, llm.Response)
 
 	mu          sync.Mutex
 	specMu      sync.Mutex
@@ -184,8 +185,8 @@ func (state *contextState) messagesLocked() []llm.Message {
 
 func (state *contextState) observe(usage llm.Usage) {
 	state.mu.Lock()
-	if usage.PromptTokens > state.providerTokens {
-		state.providerTokens = usage.PromptTokens
+	if usage.PromptTokens() > state.providerTokens {
+		state.providerTokens = usage.PromptTokens()
 	}
 	state.mu.Unlock()
 }
@@ -409,6 +410,9 @@ func (state *contextState) generateSummary(ctx context.Context, messages []llm.M
 		})
 		if err != nil {
 			return "", err
+		}
+		if state.usageRecorder != nil {
+			state.usageRecorder("compaction", response)
 		}
 		if len(response.Choices) == 0 {
 			return "", fmt.Errorf("summary response has no choices")

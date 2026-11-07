@@ -60,7 +60,7 @@ func TestCompleteEncodesRequestAndDecodesToolCalls(t *testing.T) {
 			t.Errorf("request messages = %#v", request.Messages)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chat-1","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"id\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}`))
+		_, _ = w.Write([]byte(`{"id":"chat-1","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"id\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"prompt_tokens_details":{"cached_tokens":5},"completion_tokens":4,"total_tokens":16}}`))
 	}))
 	defer server.Close()
 
@@ -86,8 +86,8 @@ func TestCompleteEncodesRequestAndDecodesToolCalls(t *testing.T) {
 	if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) != 1 || choice.Message.ToolCalls[0].Function.Name != "lookup" || choice.Message.ToolCalls[0].Function.Arguments != `{"id":1}` {
 		t.Fatalf("response choice = %#v", choice)
 	}
-	if result.Usage != (llm.Usage{PromptTokens: 12, CompletionTokens: 4, TotalTokens: 16}) {
-		t.Fatalf("usage = %#v", result.Usage)
+	if result.Usage != (llm.Usage{Input: 7, Output: 4, CacheRead: 5, Total: 16}) || !result.UsagePresent {
+		t.Fatalf("usage = %#v, present = %v", result.Usage, result.UsagePresent)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestStreamEmitsTextToolUsageAndCompletionEvents(t *testing.T) {
 			"",
 			`data: {"id":"chat-2","model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"x\"}"}}]},"finish_reason":"tool_calls"}]}`,
 			"",
-			`data: {"id":"chat-2","model":"gpt-test","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`,
+			`data: {"id":"chat-2","model":"gpt-test","choices":[],"usage":{"prompt_tokens":8,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens":3,"total_tokens":11}}`,
 			"",
 			"data: [DONE]",
 			"",
@@ -152,7 +152,7 @@ func TestStreamEmitsTextToolUsageAndCompletionEvents(t *testing.T) {
 	if events[3].Type != llm.EventCompleted || events[3].FinishReason != "tool_calls" {
 		t.Fatalf("completion event = %#v", events[3])
 	}
-	if events[4].Type != llm.EventUsage || events[4].Usage == nil || *events[4].Usage != (llm.Usage{PromptTokens: 8, CompletionTokens: 3, TotalTokens: 11}) {
+	if events[4].Type != llm.EventUsage || events[4].Usage == nil || *events[4].Usage != (llm.Usage{Input: 5, Output: 3, CacheRead: 3, Total: 11}) {
 		t.Fatalf("usage event = %#v", events[4])
 	}
 }

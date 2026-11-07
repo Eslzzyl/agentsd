@@ -29,6 +29,22 @@ func (runner testRunner) Run(ctx context.Context, request agent.RunRequest) (age
 	return agent.RunResult{FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Turns: 1}, nil
 }
 
+type usageRunner struct{}
+
+func (usageRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	if request.UsageEventSink != nil {
+		request.UsageEventSink(agent.UsageEvent{
+			Phase: "generation",
+			Model: "test-model",
+			Usage: llm.Usage{Input: 7, Output: 3, CacheRead: 5, CacheWrite: 2, Total: 17},
+		})
+	}
+	return agent.RunResult{
+		FinalMessage: llm.Message{Role: llm.RoleAssistant, Content: "done"},
+		Turns:        1,
+	}, nil
+}
+
 type messageRunner struct {
 	calls chan []llm.Message
 }
@@ -212,6 +228,72 @@ func TestServerSpawnAndInspect(t *testing.T) {
 	}
 	if len(sequencePage.Events) != 1 || sequencePage.Events[0].Seq != 1 {
 		t.Fatalf("sequence event page = %#v", sequencePage)
+	}
+}
+func TestManagerPersistsAndAggregatesModelUsage(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return usageRunner{}, "test-model", nil
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown(context.Background())
+
+	spawned, err := manager.SpawnInNamespace("usage", "", "count tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		summary, inspectErr := manager.InspectInNamespace("usage", spawned.ID)
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		if summary.Status == "idle" {
+			if summary.UsageRequests != 1 || summary.Usage != (llm.Usage{Input: 7, Output: 3, CacheRead: 5, CacheWrite: 2, Total: 17}) {
+				t.Fatalf("summary usage = %#v", summary)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent did not become idle: %#v", summary)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stats, err := manager.StatsInNamespace("usage", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Sessions != 1 || stats.Requests != 1 || stats.Usage != (llm.Usage{Input: 7, Output: 3, CacheRead: 5, CacheWrite: 2, Total: 17}) {
+		t.Fatalf("stats = %#v", stats)
+	}
+	serverResult, err := NewServer(manager).handleRequest(Request{
+		Method: "stats",
+		Params: mustJSON(map[string]string{"namespace": "usage"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverStats, ok := serverResult.(UsageStats)
+	if !ok || serverStats != stats {
+		t.Fatalf("server stats = %#v", serverResult)
+	}
+	events, err := store.ReadEvents("usage", spawned.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageEvents := 0
+	for _, event := range events {
+		if event.Type == session.EventModelUsage {
+			usageEvents++
+		}
+	}
+	if usageEvents != 1 {
+		t.Fatalf("usage events = %d, want 1", usageEvents)
 	}
 }
 

@@ -66,13 +66,70 @@ type RunRequest struct {
 	Session          *tools.SessionContext
 	EventSink        tools.EventSink
 	ContextEventSink ContextEventSink
+	UsageEventSink   UsageEventSink
 	Control          <-chan ControlRequest
 }
 
+type UsageEvent struct {
+	Phase      string
+	Model      string
+	ResponseID string
+	Usage      llm.Usage
+}
+
+type UsageEventSink func(UsageEvent)
+
 type RunResult struct {
-	FinalMessage llm.Message
-	Messages     []llm.Message
-	Turns        int
+	FinalMessage  llm.Message
+	Messages      []llm.Message
+	Turns         int
+	Usage         llm.Usage
+	UsageRequests int
+}
+
+type usageTracker struct {
+	mu       sync.Mutex
+	model    string
+	total    llm.Usage
+	requests int
+	sink     UsageEventSink
+}
+
+func newUsageTracker(model string, sink UsageEventSink) *usageTracker {
+	return &usageTracker{model: model, sink: sink}
+}
+
+func (tracker *usageTracker) record(phase string, response llm.Response) {
+	if !response.UsagePresent && response.Usage == (llm.Usage{}) {
+		return
+	}
+	model := response.Model
+	if model == "" {
+		model = tracker.model
+	}
+	tracker.mu.Lock()
+	tracker.total = tracker.total.Add(response.Usage)
+	tracker.requests++
+	tracker.mu.Unlock()
+	if tracker.sink != nil {
+		tracker.sink(UsageEvent{
+			Phase:      phase,
+			Model:      model,
+			ResponseID: response.ID,
+			Usage:      response.Usage,
+		})
+	}
+}
+
+func (tracker *usageTracker) result(messages []llm.Message, turns int) RunResult {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return RunResult{
+		Messages:      messages,
+		Turns:         turns,
+		Usage:         tracker.total,
+		UsageRequests: tracker.requests,
+	}
 }
 
 type ControlKind string
@@ -116,20 +173,25 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	if request.ContextEventSink != nil {
 		contextEventSink = request.ContextEventSink
 	}
+	tracker := newUsageTracker(request.Model, request.UsageEventSink)
 	contextState := newContextState(runtime.client, request, runtime.contextWindow)
 	contextState.eventSink = contextEventSink
+	contextState.usageRecorder = tracker.record
 	defer contextState.close()
 	events := newEventEmitter(eventSink)
 	for turn := 1; ; turn++ {
 		runtime.processControls(ctx, contextState, request.Control)
 		if _, err := runtime.injectSteering(contextState, session); err != nil {
-			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
+			result := tracker.result(contextState.messages(), turn-1)
+			return result, err
 		}
 		if runtime.maxTurns > 0 && turn > runtime.maxTurns {
-			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, ErrMaxTurns
+			result := tracker.result(contextState.messages(), turn-1)
+			return result, ErrMaxTurns
 		}
 		if err := contextState.prepare(ctx); err != nil {
-			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
+			result := tracker.result(contextState.messages(), turn-1)
+			return result, err
 		}
 		response, err := runtime.client.Complete(ctx, llm.Request{
 			Model:     modelName(request.Model),
@@ -139,11 +201,14 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 			ExtraBody: request.ExtraBody,
 		})
 		if err != nil {
-			return RunResult{Messages: contextState.messages(), Turns: turn - 1}, err
+			result := tracker.result(contextState.messages(), turn-1)
+			return result, err
 		}
+		tracker.record("generation", response)
 		contextState.observe(response.Usage)
 		if len(response.Choices) == 0 {
-			return RunResult{Messages: contextState.messages(), Turns: turn}, fmt.Errorf("agent: model response has no choices")
+			result := tracker.result(contextState.messages(), turn)
+			return result, fmt.Errorf("agent: model response has no choices")
 		}
 
 		assistant := response.Choices[0].Message
@@ -155,21 +220,21 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 			runtime.processControls(ctx, contextState, request.Control)
 			injected, err := runtime.injectSteering(contextState, session)
 			if err != nil {
-				return RunResult{Messages: contextState.messages(), Turns: turn}, err
+				result := tracker.result(contextState.messages(), turn)
+				return result, err
 			}
 			if injected {
 				continue
 			}
-			return RunResult{
-				FinalMessage: assistant,
-				Messages:     contextState.messages(),
-				Turns:        turn,
-			}, nil
+			result := tracker.result(contextState.messages(), turn)
+			result.FinalMessage = assistant
+			return result, nil
 		}
 
 		toolMessages, err := runtime.executeToolBatch(ctx, turn, assistant.ToolCalls, session, events)
 		if err != nil {
-			return RunResult{Messages: contextState.messages(), Turns: turn}, err
+			result := tracker.result(contextState.messages(), turn)
+			return result, err
 		}
 		contextState.appendAll(toolMessages)
 	}
@@ -184,8 +249,10 @@ func (runtime *Runtime) Compact(ctx context.Context, request RunRequest) (RunRes
 	if request.ContextEventSink != nil {
 		contextEventSink = request.ContextEventSink
 	}
+	tracker := newUsageTracker(request.Model, request.UsageEventSink)
 	state := newContextState(runtime.client, request, runtime.contextWindow)
 	state.eventSink = contextEventSink
+	state.usageRecorder = tracker.record
 	defer state.close()
 	event, err := state.manualCompact(ctx)
 	result := ControlResult{Status: ControlFailed}
@@ -198,7 +265,8 @@ func (runtime *Runtime) Compact(ctx context.Context, request RunRequest) (RunRes
 	default:
 		result.Error = err.Error()
 	}
-	return RunResult{Messages: state.messages()}, result, nil
+	runResult := tracker.result(state.messages(), 0)
+	return runResult, result, nil
 }
 
 func (runtime *Runtime) injectSteering(state *contextState, session tools.SessionContext) (bool, error) {

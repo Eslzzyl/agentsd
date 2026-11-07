@@ -97,10 +97,11 @@ type FunctionCall struct {
 }
 
 type Response struct {
-	ID      string
-	Model   string
-	Choices []Choice
-	Usage   Usage
+	ID           string
+	Model        string
+	Choices      []Choice
+	Usage        Usage
+	UsagePresent bool
 }
 
 type Choice struct {
@@ -110,9 +111,25 @@ type Choice struct {
 }
 
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	Input      int `json:"input"`       // non-cached input tokens
+	Output     int `json:"output"`      // output tokens
+	CacheRead  int `json:"cache_read"`  // tokens read from prompt cache
+	CacheWrite int `json:"cache_write"` // tokens written to prompt cache
+	Total      int `json:"total"`       // input + cache read/write + output
+}
+
+func (usage Usage) PromptTokens() int {
+	return usage.Input + usage.CacheRead + usage.CacheWrite
+}
+
+func (usage Usage) Add(other Usage) Usage {
+	return Usage{
+		Input:      usage.Input + other.Input,
+		Output:     usage.Output + other.Output,
+		CacheRead:  usage.CacheRead + other.CacheRead,
+		CacheWrite: usage.CacheWrite + other.CacheWrite,
+		Total:      usage.Total + other.Total,
+	}
 }
 
 type EventType string

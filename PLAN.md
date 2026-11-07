@@ -115,7 +115,8 @@
 ### 5.1 事件分类
 
 - **生命周期**：`agent.started`, `agent.resumed`, `agent.idle`, `session.waiting`, `session.woken`, `agent.completed`, `agent.failed`, `agent.canceled`
-- **推理与执行**：`turn.started`, `turn.completed`, `llm.requested`, `llm.completed`, `tool.started`, `tool.completed`, `tool.failed`
+- **推理与执行**：`turn.started`, `turn.completed`, `llm.requested`, `llm.completed`, `model.usage`, `tool.started`, `tool.completed`, `tool.failed`
+- **模型用量**：每次模型调用追加一条 `model.usage`；字段包含 `input`、`output`、`cache_read`、`cache_write`、`total`。流式文本 delta 保持内存传递。
 - **通信与协同**：`message.queued`, `message.delivered`, `message.wait_consumed`
 - **多订阅者**：同一 Session 可同时存在多个订阅者；每个订阅者独立接收该 Session 的事件副本。
 
@@ -199,6 +200,8 @@ agents inbox -n <namespace> <id>
 ```bash
 agents activity -n <namespace> <id> [--after <event-id>] [--before <event-id>] [--from-seq <seq>] [--to-seq <seq>] [--tail] [--limit <count>] [--all] [--json]
 agents activity -n <namespace> --follow [--after <event-id>] <id> # WebSocket 实时跟随输出
+agents stats -n <namespace> [<id>] [--json]
+agents stats -A [--json]
 agents log <session>
 agents show <event-id>
 ```

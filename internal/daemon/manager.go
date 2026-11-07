@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -45,6 +46,14 @@ type AgentSummary struct {
 	Error          string     `json:"error,omitempty"`
 	StartedAt      time.Time  `json:"started_at"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	Usage          llm.Usage  `json:"usage"`
+	UsageRequests  int        `json:"usage_requests"`
+}
+
+type UsageStats struct {
+	Sessions int       `json:"sessions"`
+	Requests int       `json:"requests"`
+	Usage    llm.Usage `json:"usage"`
 }
 
 type MessageReceipt struct {
@@ -181,6 +190,10 @@ func NewManager(factory RuntimeFactory, stores ...*session.Store) (*Manager, err
 	}
 	for _, item := range recovered {
 		summary := summaryFromSession(item)
+		if usage, err := manager.usageForSession(summary.Namespace, summary.ID); err == nil {
+			summary.Usage = usage.Usage
+			summary.UsageRequests = usage.Requests
+		}
 		manager.agents[summary.ID] = &managedAgent{summary: summary}
 	}
 	return manager, nil
@@ -501,8 +514,10 @@ func (manager *Manager) markIdle(record *managedAgent, result agent.RunResult) {
 	summary := record.summary
 	manager.mu.Unlock()
 	if err := manager.appendEvent(record, session.NewEvent(session.EventAgentIdle, map[string]any{
-		"turns": summary.Turns,
-		"final": summary.Final,
+		"turns":          summary.Turns,
+		"final":          summary.Final,
+		"usage":          usageData(summary.Usage),
+		"usage_requests": summary.UsageRequests,
 	})); err != nil {
 		manager.setPersistenceError(record, err)
 	}
@@ -536,8 +551,10 @@ func (manager *Manager) finishRun(record *managedAgent, result agent.RunResult, 
 		eventType = session.EventAgentCanceled
 	}
 	fields := map[string]any{
-		"finished_at": finishedAt,
-		"turns":       finalSummary.Turns,
+		"finished_at":    finishedAt,
+		"turns":          finalSummary.Turns,
+		"usage":          usageData(finalSummary.Usage),
+		"usage_requests": finalSummary.UsageRequests,
 	}
 	if finalSummary.Final != "" {
 		fields["final"] = finalSummary.Final
@@ -610,6 +627,35 @@ func (manager *Manager) runRequest(record *managedAgent, summary AgentSummary, m
 				manager.setPersistenceError(record, err)
 			}
 		},
+		UsageEventSink: func(event agent.UsageEvent) {
+			manager.recordUsage(record, event)
+		},
+	}
+}
+
+func (manager *Manager) recordUsage(record *managedAgent, event agent.UsageEvent) {
+	manager.mu.Lock()
+	record.summary.Usage = record.summary.Usage.Add(event.Usage)
+	record.summary.UsageRequests++
+	manager.mu.Unlock()
+	data := usageData(event.Usage)
+	data["phase"] = event.Phase
+	data["model"] = event.Model
+	if event.ResponseID != "" {
+		data["response_id"] = event.ResponseID
+	}
+	if err := manager.appendEvent(record, session.NewEvent(session.EventModelUsage, data)); err != nil {
+		manager.setPersistenceError(record, err)
+	}
+}
+
+func usageData(usage llm.Usage) map[string]any {
+	return map[string]any{
+		"input":       usage.Input,
+		"output":      usage.Output,
+		"cache_read":  usage.CacheRead,
+		"cache_write": usage.CacheWrite,
+		"total":       usage.Total,
 	}
 }
 
@@ -818,6 +864,87 @@ func (manager *Manager) ListInNamespace(namespace string) []AgentSummary {
 
 func (manager *Manager) ListAll() []AgentSummary {
 	return manager.listInNamespace("")
+}
+func (manager *Manager) Stats(id string) (UsageStats, error) {
+	return manager.StatsInNamespace("", id)
+}
+
+func (manager *Manager) StatsInNamespace(namespace, id string) (UsageStats, error) {
+	if manager.store == nil {
+		return UsageStats{}, fmt.Errorf("daemon: session store is required")
+	}
+	if strings.TrimSpace(id) != "" {
+		namespace, id = splitTarget(namespace, id)
+		if strings.TrimSpace(namespace) == "" {
+			return UsageStats{}, fmt.Errorf("daemon: namespace is required")
+		}
+		normalized, err := session.NormalizeNamespace(namespace)
+		if err != nil {
+			return UsageStats{}, err
+		}
+		return manager.usageForSession(normalized, id)
+	}
+	if strings.TrimSpace(namespace) != "" {
+		normalized, err := session.NormalizeNamespace(namespace)
+		if err != nil {
+			return UsageStats{}, err
+		}
+		namespace = normalized
+	}
+	summaries, err := manager.store.List(namespace)
+	if err != nil {
+		return UsageStats{}, err
+	}
+	result := UsageStats{Sessions: len(summaries)}
+	for _, summary := range summaries {
+		usage, err := manager.usageForSession(summary.Header.Namespace, summary.Header.ID)
+		if err != nil {
+			return UsageStats{}, err
+		}
+		result.Requests += usage.Requests
+		result.Usage = result.Usage.Add(usage.Usage)
+	}
+	return result, nil
+}
+
+func (manager *Manager) usageForSession(namespace, id string) (UsageStats, error) {
+	events, err := manager.store.ReadEvents(namespace, id, "")
+	if err != nil {
+		return UsageStats{}, err
+	}
+	result := UsageStats{Sessions: 1}
+	for _, event := range events {
+		if event.Type != session.EventModelUsage {
+			continue
+		}
+		usage := llm.Usage{
+			Input:      eventInt(event.Data, "input"),
+			Output:     eventInt(event.Data, "output"),
+			CacheRead:  eventInt(event.Data, "cache_read"),
+			CacheWrite: eventInt(event.Data, "cache_write"),
+			Total:      eventInt(event.Data, "total"),
+		}
+		result.Requests++
+		result.Usage = result.Usage.Add(usage)
+	}
+	return result, nil
+}
+
+func eventInt(data map[string]any, key string) int {
+	switch value := data[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, err := value.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	}
+	return 0
 }
 
 func (manager *Manager) listInNamespace(namespace string) []AgentSummary {

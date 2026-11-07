@@ -19,20 +19,26 @@ type compactionTestClient struct {
 	requests     []llm.Request
 }
 
+func responseWithUsage(response llm.Response) llm.Response {
+	response.Usage = llm.Usage{Input: 10, Output: 2, CacheRead: 3, CacheWrite: 1, Total: 16}
+	response.UsagePresent = true
+	return response
+}
+
 func (client *compactionTestClient) Complete(_ context.Context, request llm.Request) (llm.Response, error) {
 	client.mu.Lock()
 	client.requests = append(client.requests, request)
 	defer client.mu.Unlock()
 	if len(request.Messages) > 0 && request.Messages[0].Role == llm.RoleSystem && request.Messages[0].Content == summarySystemPrompt {
 		client.summaryCalls++
-		return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+		return responseWithUsage(llm.Response{Choices: []llm.Choice{{Message: llm.Message{
 			Role:    llm.RoleAssistant,
 			Content: fmt.Sprintf("summary-%d", client.summaryCalls),
-		}}}}, nil
+		}}}}), nil
 	}
 	client.mainTurns++
 	if client.mainTurns <= 14 {
-		return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+		return responseWithUsage(llm.Response{Choices: []llm.Choice{{Message: llm.Message{
 			Role: llm.RoleAssistant,
 			ToolCalls: []llm.ToolCall{{
 				ID:   fmt.Sprintf("call-%d", client.mainTurns),
@@ -42,12 +48,12 @@ func (client *compactionTestClient) Complete(_ context.Context, request llm.Requ
 					Arguments: `{}`,
 				},
 			}},
-		}}}}, nil
+		}}}}), nil
 	}
-	return llm.Response{Choices: []llm.Choice{{Message: llm.Message{
+	return responseWithUsage(llm.Response{Choices: []llm.Choice{{Message: llm.Message{
 		Role:    llm.RoleAssistant,
 		Content: "done",
-	}}}}, nil
+	}}}}), nil
 }
 
 func (client *compactionTestClient) Stream(context.Context, llm.Request, func(llm.Event) error) error {
@@ -147,6 +153,16 @@ func TestRuntimeCompactsMultipleTimesAndPersistsEvents(t *testing.T) {
 	defer client.mu.Unlock()
 	if client.summaryCalls < len(events) {
 		t.Fatalf("summary calls = %d, events = %d", client.summaryCalls, len(events))
+	}
+	expectedRequests := client.mainTurns + client.summaryCalls
+	if result.UsageRequests != expectedRequests || result.Usage != (llm.Usage{
+		Input:      expectedRequests * 10,
+		Output:     expectedRequests * 2,
+		CacheRead:  expectedRequests * 3,
+		CacheWrite: expectedRequests,
+		Total:      expectedRequests * 16,
+	}) {
+		t.Fatalf("usage = %#v, requests = %d, want %d", result.Usage, result.UsageRequests, expectedRequests)
 	}
 	for _, request := range client.requests {
 		if len(request.Messages) == 0 || request.Messages[0].Role != llm.RoleSystem || request.Messages[0].Content != summarySystemPrompt {

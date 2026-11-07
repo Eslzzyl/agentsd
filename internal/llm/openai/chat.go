@@ -84,11 +84,7 @@ type chatResponse struct {
 		Message      chatMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage *chatUsage `json:"usage"`
 }
 
 func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -143,11 +139,8 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		})
 	}
 	if decoded.Usage != nil {
-		result.Usage = llm.Usage{
-			PromptTokens:     decoded.Usage.PromptTokens,
-			CompletionTokens: decoded.Usage.CompletionTokens,
-			TotalTokens:      decoded.Usage.TotalTokens,
-		}
+		result.Usage = normalizeUsage(*decoded.Usage)
+		result.UsagePresent = true
 	}
 	return result, nil
 }

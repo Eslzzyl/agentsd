@@ -189,6 +189,19 @@ func (server *Server) handleRequest(request Request) (any, error) {
 			return nil, err
 		}
 		return server.manager.InspectInNamespace(params.Namespace, params.ID)
+	case "stats":
+		var params struct {
+			Namespace     string `json:"namespace"`
+			ID            string `json:"id"`
+			AllNamespaces bool   `json:"all_namespaces"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		if params.AllNamespaces && (strings.TrimSpace(params.Namespace) != "" || strings.TrimSpace(params.ID) != "") {
+			return nil, errors.New("stats: --all-namespaces cannot select a namespace or session")
+		}
+		return server.manager.StatsInNamespace(params.Namespace, params.ID)
 	case "session.compact":
 		var params struct {
 			Namespace string `json:"namespace"`
