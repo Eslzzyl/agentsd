@@ -42,6 +42,22 @@ func TestAuthLoadMissingAndSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAuthStoreResolvesBearerAndExtendedCredentials(t *testing.T) {
+	auth := AuthStore{
+		"oauth": {AccessToken: "access-token", RefreshToken: "refresh-token", ProjectID: "project"},
+		"key":   {APIKey: "api-key"},
+	}
+	if got := auth.Bearer("oauth"); got != "access-token" {
+		t.Fatalf("oauth bearer = %q", got)
+	}
+	if got := auth.Bearer("key"); got != "api-key" {
+		t.Fatalf("api key bearer = %q", got)
+	}
+	if got := auth.Provider("oauth"); got.RefreshToken != "refresh-token" || got.ProjectID != "project" {
+		t.Fatalf("extended credentials = %#v", got)
+	}
+}
+
 func TestLoadAuthRejectsMalformedAndUnknownFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth.json")
 	for name, contents := range map[string]string{

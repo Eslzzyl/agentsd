@@ -253,3 +253,39 @@ agents show <event-id>
 后续工作：
 1. 搭建独立的、可选的 GPU 渲染桌面监控应用。
 2. 完善 Session 分支历史与故障恢复机制。
+
+## 10. Network Search and Web Fetch
+
+Implemented:
+
+1. `web_search` and `web_fetch` are registered in the default daemon tool registry.
+2. Search is enabled by default when `[search]` is absent. Fetch is enabled by default when `[fetch]` is absent.
+3. The provider registry includes the public HTML, MCP, SSE, API-key, endpoint-configured, anonymous, and grounded providers mirrored from `oh-my-pi`.
+4. Search uses a normalized `SearchResponse`, provider order, provider enable flags, fallback, request timeouts, Exa pacing, and output artifacts.
+5. Fetch supports HTTP/HTTPS, redirects, HTML text rendering, JSON formatting, raw content, response-size limits, and Firecrawl/Jina reader fallback when credentials are present.
+6. `auth.json` accepts API keys, bearer tokens, cookies, username/password pairs, provider account identifiers, and per-provider auth references.
+
+Optional configuration:
+
+```toml
+[search]
+order = ["duckduckgo", "parallel", "exa", "firecrawl", "google"]
+max_results = 10
+
+[search.providers.searxng]
+endpoint = "https://searx.example/search"
+
+[fetch]
+timeout_seconds = 30
+max_bytes = 2097152
+```
+
+API keys are stored in `auth.json`:
+
+```json
+{
+  "brave": {"api_key": "..."},
+  "tavily": {"api_key": "..."},
+  "firecrawl": {"api_key": "..."}
+}
+```

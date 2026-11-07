@@ -11,6 +11,7 @@ import (
 	"agentsd/internal/llm"
 	"agentsd/internal/llm/openai"
 	"agentsd/internal/tools"
+	"agentsd/internal/web"
 )
 
 type ConfigFactory struct {
@@ -58,6 +59,15 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 		return nil, "", err
 	}
 	limiter := tools.OutputLimiter{Store: artifactStore}
+	webRuntime := web.NewRuntime(cfg.Search, cfg.Fetch, auth, web.ModelContext{
+		ProviderID:     resolved.ProviderID,
+		ModelID:        resolved.ModelID,
+		RequestModelID: resolved.RequestModelID,
+		APIType:        string(resolved.APIType),
+		BaseURL:        resolved.BaseURL,
+		ExtraBody:      resolved.MergedExtraBody(),
+	}, nil)
+	searchClient := web.NewSearchClient(webRuntime)
 	registry, err := tools.NewRegistry(
 		tools.ReadTool{Workspace: workspace, Limiter: limiter},
 		tools.GlobTool{Workspace: workspace, Limiter: limiter},
@@ -67,6 +77,8 @@ func (factory ConfigFactory) New(model string) (Runner, string, error) {
 		tools.EditTool{Workspace: workspace},
 		tools.ShellTool{WorkingDir: workspace.Root, MaxOutputBytes: tools.DefaultShellMaxOutputBytes},
 		tools.WaitTool{},
+		tools.WebSearchTool{Client: searchClient, Limiter: limiter},
+		tools.WebFetchTool{Runtime: webRuntime, Limiter: limiter},
 	)
 	if err != nil {
 		return nil, "", err

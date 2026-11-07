@@ -14,7 +14,15 @@ import (
 type AuthStore map[string]ProviderAuth
 
 type ProviderAuth struct {
-	APIKey string `json:"api_key,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Cookies      string `json:"cookies,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	AccountID    string `json:"account_id,omitempty"`
+	ProjectID    string `json:"project_id,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 func LoadAuth(path string) (AuthStore, error) {
@@ -50,6 +58,22 @@ func (auth AuthStore) APIKey(providerID string) string {
 		return ""
 	}
 	return entry.APIKey
+}
+
+func (auth AuthStore) Provider(providerID string) ProviderAuth {
+	entry, ok := auth[providerID]
+	if !ok {
+		return ProviderAuth{}
+	}
+	return entry
+}
+
+func (auth AuthStore) Bearer(providerID string) string {
+	entry := auth.Provider(providerID)
+	if strings.TrimSpace(entry.APIKey) != "" {
+		return entry.APIKey
+	}
+	return strings.TrimSpace(entry.AccessToken)
 }
 
 func SaveAuth(path string, auth AuthStore) error {

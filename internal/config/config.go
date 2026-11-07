@@ -16,6 +16,127 @@ type Config struct {
 	Model         string                    `toml:"model"`
 	ThinkingLevel string                    `toml:"thinking_level,omitempty"`
 	Providers     map[string]ProviderConfig `toml:"providers"`
+	Search        SearchConfig              `toml:"search,omitempty"`
+	Fetch         FetchConfig               `toml:"fetch,omitempty"`
+}
+
+type SearchConfig struct {
+	Enabled   *bool                           `toml:"enabled,omitempty"`
+	Timeout   int                             `toml:"timeout_seconds,omitempty"`
+	MaxResult int                             `toml:"max_results,omitempty"`
+	Order     []string                        `toml:"order,omitempty"`
+	Providers map[string]SearchProviderConfig `toml:"providers,omitempty"`
+}
+
+type SearchProviderConfig struct {
+	Enabled  *bool          `toml:"enabled,omitempty"`
+	Endpoint string         `toml:"endpoint,omitempty"`
+	AuthRef  string         `toml:"auth_ref,omitempty"`
+	Model    string         `toml:"model,omitempty"`
+	Options  map[string]any `toml:"options,omitempty"`
+}
+
+type FetchConfig struct {
+	Enabled  *bool `toml:"enabled,omitempty"`
+	Timeout  int   `toml:"timeout_seconds,omitempty"`
+	MaxBytes int64 `toml:"max_bytes,omitempty"`
+}
+
+const (
+	DefaultSearchTimeoutSeconds = 60
+	DefaultSearchMaxResults     = 10
+	DefaultFetchTimeoutSeconds  = 30
+	DefaultFetchMaxBytes        = 2 << 20
+)
+
+var DefaultSearchOrder = []string{
+	"duckduckgo",
+	"parallel",
+	"exa",
+	"firecrawl",
+	"google",
+	"ecosia",
+	"startpage",
+	"mojeek",
+	"brave",
+	"tavily",
+	"jina",
+	"kagi",
+	"tinyfish",
+	"searxng",
+	"perplexity",
+	"zai",
+	"deepseek",
+	"kimi",
+	"synthetic",
+	"ollama",
+	"gemini",
+	"anthropic",
+	"codex",
+	"xai",
+	"openrouter",
+	"openai",
+}
+
+func (cfg SearchConfig) IsEnabled() bool {
+	return cfg.Enabled == nil || *cfg.Enabled
+}
+
+func (cfg SearchConfig) TimeoutSeconds() int {
+	if cfg.Timeout <= 0 {
+		return DefaultSearchTimeoutSeconds
+	}
+	return cfg.Timeout
+}
+
+func (cfg SearchConfig) MaxResults() int {
+	if cfg.MaxResult <= 0 {
+		return DefaultSearchMaxResults
+	}
+	return cfg.MaxResult
+}
+
+func (cfg SearchConfig) ProviderOrder() []string {
+	if len(cfg.Order) == 0 {
+		return append([]string(nil), DefaultSearchOrder...)
+	}
+	order := make([]string, 0, len(cfg.Order))
+	for _, provider := range cfg.Order {
+		if strings.TrimSpace(provider) != "" {
+			order = append(order, strings.TrimSpace(provider))
+		}
+	}
+	return order
+}
+
+func (cfg SearchConfig) Provider(id string) SearchProviderConfig {
+	provider, ok := cfg.Providers[id]
+	if !ok {
+		return SearchProviderConfig{}
+	}
+	return provider
+}
+
+func (cfg SearchProviderConfig) IsEnabled() bool {
+	return cfg.Enabled == nil || *cfg.Enabled
+}
+
+func (cfg FetchConfig) IsEnabled() bool {
+	return cfg.Enabled == nil || *cfg.Enabled
+}
+
+func (cfg FetchConfig) TimeoutSeconds() int {
+	if cfg.Timeout <= 0 {
+		return DefaultFetchTimeoutSeconds
+	}
+	return cfg.Timeout
+}
+
+func (cfg FetchConfig) MaxBodyBytes() int64 {
+	if cfg.MaxBytes <= 0 {
+		return DefaultFetchMaxBytes
+	}
+	return cfg.MaxBytes
 }
 
 type ProviderConfig struct {
