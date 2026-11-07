@@ -6,16 +6,64 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 
 	"agentsd/internal/tools"
 )
 
 type Server struct {
-	manager *Manager
+	manager      *Manager
+	lifecycleMu  sync.RWMutex
+	status       DaemonStatus
+	shutdownOnce sync.Once
+	shutdownFunc func()
 }
 
 func NewServer(manager *Manager) *Server {
-	return &Server{manager: manager}
+	return &Server{
+		manager: manager,
+		status:  DaemonStatus{State: "running"},
+	}
+}
+
+func (server *Server) SetDaemonStatus(status DaemonStatus) {
+	if status.State == "" {
+		status.State = "running"
+	}
+	server.lifecycleMu.Lock()
+	server.status = status
+	server.lifecycleMu.Unlock()
+}
+
+func (server *Server) SetDaemonState(state string) {
+	server.lifecycleMu.Lock()
+	server.status.State = state
+	server.lifecycleMu.Unlock()
+}
+
+func (server *Server) SetShutdownHandler(handler func()) {
+	server.lifecycleMu.Lock()
+	server.shutdownFunc = handler
+	server.lifecycleMu.Unlock()
+}
+
+func (server *Server) daemonStatus() DaemonStatus {
+	server.lifecycleMu.RLock()
+	defer server.lifecycleMu.RUnlock()
+	return server.status
+}
+
+func (server *Server) requestShutdown() error {
+	server.lifecycleMu.RLock()
+	handler := server.shutdownFunc
+	server.lifecycleMu.RUnlock()
+	if handler == nil {
+		return errors.New("daemon: shutdown is unavailable")
+	}
+	server.shutdownOnce.Do(func() {
+		go handler()
+	})
+	return nil
 }
 
 func (server *Server) Serve(listener net.Listener) error {
@@ -62,6 +110,13 @@ func (server *Server) handleConnection(connection net.Conn) {
 
 func (server *Server) handleRequest(request Request) (any, error) {
 	switch request.Method {
+	case "daemon.status":
+		return server.daemonStatus(), nil
+	case "daemon.shutdown":
+		if err := server.requestShutdown(); err != nil {
+			return nil, err
+		}
+		return map[string]string{"state": "stopping"}, nil
 	case "spawn":
 		var params struct {
 			Namespace string `json:"namespace"`

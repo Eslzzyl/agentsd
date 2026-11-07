@@ -11,6 +11,8 @@ type Paths struct {
 	ConfigFile        string
 	AuthFile          string
 	SessionsDirectory string
+	StateFile         string
+	LogFile           string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -31,6 +33,8 @@ func PathsForHome(home string) Paths {
 		ConfigFile:        filepath.Join(directory, "config.toml"),
 		AuthFile:          filepath.Join(directory, "auth.json"),
 		SessionsDirectory: filepath.Join(directory, "sessions"),
+		StateFile:         filepath.Join(directory, "daemon.json"),
+		LogFile:           filepath.Join(directory, "daemon.log"),
 	}
 }
 

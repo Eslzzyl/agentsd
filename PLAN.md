@@ -153,6 +153,16 @@ agents pause <id>
 agents resume <id>
 ```
 
+**Daemon 管理**
+```bash
+agents daemon start [--socket <path>] [--config <path>] [--auth <path>]
+agents daemon status [--json]
+agents daemon stop [--timeout <duration>] [--force]
+agents daemon restart [--timeout <duration>] [--force]
+```
+
+`agents daemon start` 以当前用户身份在后台启动 `agentsd`，状态和日志默认写入 `~/.agentsd`。直接运行 `agentsd` 保留前台模式。
+
 **命名空间管理**
 ```bash
 agents namespace create <namespace>

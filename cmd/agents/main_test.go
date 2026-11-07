@@ -19,7 +19,7 @@ func TestFriendlyConnectionError(t *testing.T) {
 
 	for _, want := range []string{
 		"Unable to connect to the agentsd daemon.",
-		`agentsd --socket "/tmp/agentsd.sock"`,
+		`agents daemon start --socket "/tmp/agentsd.sock"`,
 		"Socket path: /tmp/agentsd.sock",
 		"Connection details: file does not exist",
 	} {

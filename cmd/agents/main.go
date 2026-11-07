@@ -39,6 +39,8 @@ func main() {
 		err = runActivity(os.Args[2:])
 	case "namespace":
 		err = runNamespace(os.Args[2:])
+	case "daemon":
+		err = runDaemon(os.Args[2:])
 	default:
 		usage()
 	}
@@ -453,7 +455,7 @@ func friendlyConnectionError(socket string, err error) error {
 		return err
 	}
 	return fmt.Errorf(
-		"Unable to connect to the agentsd daemon.\n\nStart the daemon first:\n  agentsd --socket %q\n\nSocket path: %s\nConnection details: %w",
+		"Unable to connect to the agentsd daemon.\n\nStart the daemon first:\n  agents daemon start --socket %q\n\nSocket path: %s\nConnection details: %w",
 		socket,
 		socket,
 		opErr.Err,
@@ -496,6 +498,6 @@ func defaultSocket() string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace> [options]")
+	fmt.Fprintln(os.Stderr, "usage: agents <spawn|ps|inspect|kill|compact|send|inbox|activity|namespace|daemon> [options]")
 	os.Exit(2)
 }

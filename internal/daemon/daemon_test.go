@@ -674,3 +674,63 @@ func TestManagerForceDeleteCancelsActiveSessions(t *testing.T) {
 		t.Fatalf("namespaces after force delete = %#v", namespaces)
 	}
 }
+
+func TestManagerShutdownCancelsActiveSessions(t *testing.T) {
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return testRunner{wait: true}, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawned, err := manager.SpawnInNamespace("shutdown", "", "stop me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inspected, err := manager.Inspect(spawned.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspected.Status != "canceled" {
+		t.Fatalf("shutdown status = %#v", inspected)
+	}
+}
+
+func TestServerDaemonLifecycleRPC(t *testing.T) {
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return testRunner{}, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	server.SetDaemonStatus(DaemonStatus{State: "running", PID: 42, SocketPath: "/tmp/agentsd.sock"})
+	shutdown := make(chan struct{})
+	server.SetShutdownHandler(func() {
+		close(shutdown)
+	})
+
+	result, err := server.handleRequest(Request{Method: "daemon.status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := result.(DaemonStatus)
+	if !ok {
+		t.Fatalf("status type = %T", result)
+	}
+	if status.State != "running" || status.PID != 42 {
+		t.Fatalf("status = %#v", status)
+	}
+	if _, err := server.handleRequest(Request{Method: "daemon.shutdown"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-shutdown:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown handler was not called")
+	}
+}

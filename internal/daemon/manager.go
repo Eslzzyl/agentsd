@@ -138,10 +138,12 @@ type managedAgent struct {
 type Manager struct {
 	mu      sync.RWMutex
 	eventMu sync.Mutex
+	runWG   sync.WaitGroup
 	agents  map[string]*managedAgent
 	factory RuntimeFactory
 	store   *session.Store
 	events  *eventHub
+	closed  bool
 }
 
 type NamespaceResult struct {
@@ -182,6 +184,39 @@ func NewManager(factory RuntimeFactory, stores ...*session.Store) (*Manager, err
 		manager.agents[summary.ID] = &managedAgent{summary: summary}
 	}
 	return manager, nil
+}
+
+func (manager *Manager) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	manager.mu.Lock()
+	manager.closed = true
+	cancels := make([]context.CancelFunc, 0)
+	for _, record := range manager.agents {
+		if record.cancel == nil {
+			continue
+		}
+		record.cancelRequested = true
+		record.summary.Status = "stopping"
+		cancels = append(cancels, record.cancel)
+	}
+	manager.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		manager.runWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (manager *Manager) CreateNamespace(namespace string) error {
@@ -279,6 +314,12 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	manager.mu.RLock()
+	closed := manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		return AgentSummary{}, fmt.Errorf("daemon: manager is shutting down")
+	}
 	runner, resolvedModel, err := manager.factory(model)
 	if err != nil {
 		return AgentSummary{}, err
@@ -335,7 +376,19 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 		return err
 	})
 	manager.mu.Lock()
+	if manager.closed {
+		manager.mu.Unlock()
+		cancel()
+		if manager.store != nil {
+			_ = manager.store.AppendEvent(namespace, id, session.EventAgentFailed, map[string]any{
+				"error":       "daemon is shutting down",
+				"finished_at": time.Now().UTC(),
+			})
+		}
+		return AgentSummary{}, fmt.Errorf("daemon: manager is shutting down")
+	}
 	manager.agents[id] = record
+	manager.runWG.Add(1)
 	summary := record.summary
 	manager.mu.Unlock()
 	if err := manager.appendEvent(record, session.NewEvent(session.EventAgentStarted, map[string]any{
@@ -346,12 +399,16 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 	})); err != nil {
 		manager.mu.Lock()
 		delete(manager.agents, id)
+		manager.runWG.Done()
 		manager.mu.Unlock()
 		cancel()
 		return AgentSummary{}, err
 	}
 
-	go manager.run(ctx, record, runner, resolvedModel)
+	go func() {
+		defer manager.runWG.Done()
+		manager.run(ctx, record, runner, resolvedModel)
+	}()
 	return summary, nil
 }
 
