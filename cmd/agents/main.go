@@ -27,6 +27,8 @@ func main() {
 		err = runSpawn(os.Args[2:])
 	case "ps":
 		err = runPS(os.Args[2:])
+	case "inspect":
+		err = runInspect(os.Args[2:])
 	case "kill":
 		err = runKill(os.Args[2:])
 	case "compact":
