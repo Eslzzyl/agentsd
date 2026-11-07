@@ -15,7 +15,10 @@ import (
 
 	"agentsd/internal/config"
 	"agentsd/internal/daemon"
+	"agentsd/internal/session"
 )
+
+const defaultActivityLimit = 50
 
 func main() {
 	if len(os.Args) < 2 {
@@ -266,12 +269,30 @@ func runActivity(args []string) error {
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	follow := flags.Bool("follow", false, "follow live events over WebSocket")
 	after := flags.String("after", "", "resume after an event ID")
+	before := flags.String("before", "", "return events before an event ID")
+	fromSeq := flags.Uint64("from-seq", 0, "minimum event sequence")
+	toSeq := flags.Uint64("to-seq", 0, "maximum event sequence")
+	tail := flags.Bool("tail", false, "return the latest events in the selected range")
+	limit := flags.Int("limit", defaultActivityLimit, "maximum events to return (0 for all)")
+	all := flags.Bool("all", false, "return all events")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
+	if *limit < 0 {
+		return fmt.Errorf("activity: limit cannot be negative")
+	}
+	if *fromSeq > 0 && *toSeq > 0 && *fromSeq > *toSeq {
+		return fmt.Errorf("activity: sequence range is invalid")
+	}
+	if *follow && (*before != "" || *fromSeq > 0 || *toSeq > 0 || *tail) {
+		return fmt.Errorf("activity: --follow supports --after only")
+	}
+	if *all {
+		*limit = 0
+	}
 	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: agents activity [--socket path] [-n namespace] [--follow] [--after event-id] <id>")
+		return fmt.Errorf("usage: agents activity [--socket path] [-n namespace] [--follow] [--after event-id] [--before event-id] [--from-seq seq] [--to-seq seq] [--tail] [--limit count] [--all] <id>")
 	}
 	id := flags.Arg(0)
 	if strings.TrimSpace(*namespace) == "" && !strings.Contains(id, "/") {
@@ -284,7 +305,21 @@ func runActivity(args []string) error {
 		Namespace string `json:"namespace"`
 		ID        string `json:"id"`
 		After     string `json:"after"`
-	}{Namespace: *namespace, ID: id, After: *after})
+		Before    string `json:"before"`
+		FromSeq   uint64 `json:"from_seq"`
+		ToSeq     uint64 `json:"to_seq"`
+		Limit     int    `json:"limit"`
+		Tail      bool   `json:"tail"`
+	}{
+		Namespace: *namespace,
+		ID:        id,
+		After:     *after,
+		Before:    *before,
+		FromSeq:   *fromSeq,
+		ToSeq:     *toSeq,
+		Limit:     *limit,
+		Tail:      *tail,
+	})
 	if err != nil {
 		return err
 	}
@@ -447,6 +482,9 @@ func callAndPrintWithTimeout(
 	if request.Method == "namespace.list" && !jsonOutput {
 		return printNamespaces(result)
 	}
+	if request.Method == "session.events" && !jsonOutput {
+		return printActivity(result)
+	}
 	var formatted bytes.Buffer
 	if err := json.Indent(&formatted, result, "", "  "); err != nil {
 		return err
@@ -491,6 +529,34 @@ func printNamespaces(result []byte) error {
 	}
 	for _, namespace := range namespaces {
 		fmt.Println(namespace)
+	}
+	return nil
+}
+func printActivity(result []byte) error {
+	var page session.EventPage
+	if err := json.Unmarshal(result, &page); err != nil {
+		return err
+	}
+	if len(page.Events) == 0 {
+		fmt.Println("no events")
+		return nil
+	}
+	for _, event := range page.Events {
+		fmt.Printf("%s #%d %-24s %s", event.Timestamp.Format(time.RFC3339), event.Seq, event.Type, event.ID)
+		if len(event.Data) > 0 {
+			data, err := json.Marshal(event.Data)
+			if err != nil {
+				return err
+			}
+			fmt.Printf(" %s", data)
+		}
+		fmt.Println()
+	}
+	if page.HasPrevious {
+		fmt.Printf("earlier events available; resume with --before %s\n", page.PreviousBefore)
+	}
+	if page.HasMore {
+		fmt.Printf("more events available; resume with --after %s\n", page.NextAfter)
 	}
 	return nil
 }

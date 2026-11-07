@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"agentsd/internal/session"
 	"agentsd/internal/tools"
 )
 
@@ -223,11 +224,23 @@ func (server *Server) handleRequest(request Request) (any, error) {
 			Namespace string `json:"namespace"`
 			ID        string `json:"id"`
 			After     string `json:"after"`
+			Before    string `json:"before"`
+			FromSeq   uint64 `json:"from_seq"`
+			ToSeq     uint64 `json:"to_seq"`
+			Limit     int    `json:"limit"`
+			Tail      bool   `json:"tail"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return server.manager.EventsInNamespace(params.Namespace, params.ID, params.After)
+		return server.manager.QueryEventPageInNamespace(params.Namespace, params.ID, session.EventQuery{
+			After:   params.After,
+			Before:  params.Before,
+			FromSeq: params.FromSeq,
+			ToSeq:   params.ToSeq,
+			Limit:   params.Limit,
+			Tail:    params.Tail,
+		})
 	case "kill":
 		var params struct {
 			Namespace string `json:"namespace"`

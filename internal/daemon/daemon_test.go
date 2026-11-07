@@ -112,7 +112,11 @@ func TestServerSpawnAndInspect(t *testing.T) {
 	factory := func(string) (Runner, string, error) {
 		return testRunner{}, "test-model", nil
 	}
-	manager, err := NewManager(factory)
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(factory, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +165,53 @@ func TestServerSpawnAndInspect(t *testing.T) {
 			t.Fatalf("agent did not complete: %#v", inspected)
 		}
 		time.Sleep(time.Millisecond)
+	}
+	pageResult, err := Call(context.Background(), socketPath, Request{
+		Method: "session.events",
+		Params: mustJSON(map[string]any{"namespace": "test", "id": spawned.ID, "limit": 1}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page session.EventPage
+	if err := json.Unmarshal(pageResult, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Seq != 1 || !page.HasMore || page.NextAfter == "" {
+		t.Fatalf("event page = %#v", page)
+	}
+	tailResult, err := Call(context.Background(), socketPath, Request{
+		Method: "session.events",
+		Params: mustJSON(map[string]any{"namespace": "test", "id": spawned.ID, "limit": 1, "tail": true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tailPage session.EventPage
+	if err := json.Unmarshal(tailResult, &tailPage); err != nil {
+		t.Fatal(err)
+	}
+	if len(tailPage.Events) != 1 || !tailPage.HasPrevious || tailPage.PreviousBefore == "" {
+		t.Fatalf("tail event page = %#v", tailPage)
+	}
+	sequenceResult, err := Call(context.Background(), socketPath, Request{
+		Method: "session.events",
+		Params: mustJSON(map[string]any{
+			"namespace": "test",
+			"id":        spawned.ID,
+			"from_seq":  1,
+			"to_seq":    1,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sequencePage session.EventPage
+	if err := json.Unmarshal(sequenceResult, &sequencePage); err != nil {
+		t.Fatal(err)
+	}
+	if len(sequencePage.Events) != 1 || sequencePage.Events[0].Seq != 1 {
+		t.Fatalf("sequence event page = %#v", sequencePage)
 	}
 }
 

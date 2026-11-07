@@ -197,7 +197,7 @@ agents inbox -n <namespace> <id>
 
 **观测与流式跟踪**
 ```bash
-agents activity -n <namespace> <id>                              # 查看历史事件
+agents activity -n <namespace> <id> [--after <event-id>] [--before <event-id>] [--from-seq <seq>] [--to-seq <seq>] [--tail] [--limit <count>] [--all] [--json]
 agents activity -n <namespace> --follow [--after <event-id>] <id> # WebSocket 实时跟随输出
 agents log <session>
 agents show <event-id>

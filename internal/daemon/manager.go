@@ -677,10 +677,25 @@ func (manager *Manager) appendEvent(record *managedAgent, event session.Event) e
 }
 
 func (manager *Manager) EventsInNamespace(namespace, id, after string) ([]session.Event, error) {
+	page, err := manager.QueryEventPageInNamespace(namespace, id, session.EventQuery{After: after})
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
+}
+
+func (manager *Manager) EventPageInNamespace(namespace, id, after string, limit int) (session.EventPage, error) {
+	return manager.QueryEventPageInNamespace(namespace, id, session.EventQuery{
+		After: after,
+		Limit: limit,
+	})
+}
+
+func (manager *Manager) QueryEventPageInNamespace(namespace, id string, query session.EventQuery) (session.EventPage, error) {
 	if strings.TrimSpace(namespace) != "" {
 		normalized, err := session.NormalizeNamespace(namespace)
 		if err != nil {
-			return nil, err
+			return session.EventPage{}, err
 		}
 		namespace = normalized
 	}
@@ -688,15 +703,15 @@ func (manager *Manager) EventsInNamespace(namespace, id, after string) ([]sessio
 	record, err := manager.findLocked(namespace, id)
 	if err != nil {
 		manager.mu.RUnlock()
-		return nil, err
+		return session.EventPage{}, err
 	}
 	actualNamespace := record.summary.Namespace
 	actualID := record.summary.ID
 	manager.mu.RUnlock()
 	if manager.store == nil {
-		return nil, fmt.Errorf("daemon: session store is required")
+		return session.EventPage{}, fmt.Errorf("daemon: session store is required")
 	}
-	return manager.store.ReadEvents(actualNamespace, actualID, after)
+	return manager.store.QueryEventPage(actualNamespace, actualID, query)
 }
 
 func (manager *Manager) SubscribeInNamespace(namespace, id, after string) (*eventSubscription, []session.Event, error) {

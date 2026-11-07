@@ -46,10 +46,11 @@ type Header struct {
 }
 
 type Event struct {
-	Type      string         `json:"-"`
-	ID        string         `json:"-"`
-	Timestamp time.Time      `json:"-"`
-	Data      map[string]any `json:"-"`
+	Type      string
+	ID        string
+	Seq       uint64
+	Timestamp time.Time
+	Data      map[string]any
 }
 
 func NewEvent(eventType string, data map[string]any) Event {
@@ -67,7 +68,7 @@ func PrepareEvent(event Event) Event {
 }
 
 func (event Event) MarshalJSON() ([]byte, error) {
-	fields := make(map[string]any, len(event.Data)+3)
+	fields := make(map[string]any, len(event.Data)+4)
 	for key, value := range event.Data {
 		fields[key] = value
 	}
@@ -76,6 +77,9 @@ func (event Event) MarshalJSON() ([]byte, error) {
 	}
 	if event.ID != "" {
 		fields["id"] = event.ID
+	}
+	if event.Seq > 0 {
+		fields["seq"] = event.Seq
 	}
 	if !event.Timestamp.IsZero() {
 		fields["timestamp"] = event.Timestamp
@@ -98,6 +102,10 @@ func (event *Event) UnmarshalJSON(data []byte) error {
 			}
 		case "id":
 			if err := json.Unmarshal(raw, &decoded.ID); err != nil {
+				return err
+			}
+		case "seq":
+			if err := json.Unmarshal(raw, &decoded.Seq); err != nil {
 				return err
 			}
 		case "timestamp":
@@ -128,8 +136,9 @@ type Summary struct {
 }
 
 type Store struct {
-	root string
-	mu   sync.Mutex
+	root     string
+	mu       sync.Mutex
+	eventSeq map[string]uint64
 }
 
 func NewStore(root string) (*Store, error) {
@@ -143,7 +152,7 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(absolute, 0o700); err != nil {
 		return nil, fmt.Errorf("session: create root %q: %w", absolute, err)
 	}
-	return &Store{root: absolute}, nil
+	return &Store{root: absolute, eventSeq: make(map[string]uint64)}, nil
 }
 
 func (store *Store) Root() string {
@@ -395,6 +404,11 @@ func (store *Store) AppendWithResult(namespace, id string, event Event) (Event, 
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	lastSeq, err := store.nextEventSeqLocked(path)
+	if err != nil {
+		return Event{}, err
+	}
+	event.Seq = lastSeq + 1
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return Event{}, fmt.Errorf("session: open %q for append: %w", path, err)
@@ -406,6 +420,7 @@ func (store *Store) AppendWithResult(namespace, id string, event Event) (Event, 
 	if err := file.Sync(); err != nil {
 		return Event{}, fmt.Errorf("session: sync event: %w", err)
 	}
+	store.eventSeq[path] = event.Seq
 	return event, nil
 }
 
@@ -417,17 +432,107 @@ func (store *Store) AppendEventWithResult(namespace, id, eventType string, data 
 	return store.AppendWithResult(namespace, id, NewEvent(eventType, data))
 }
 
+type EventQuery struct {
+	After   string
+	Before  string
+	FromSeq uint64
+	ToSeq   uint64
+	Limit   int
+	Tail    bool
+}
+
+type EventPage struct {
+	Events         []Event `json:"events"`
+	PreviousBefore string  `json:"previous_before,omitempty"`
+	NextAfter      string  `json:"next_after,omitempty"`
+	HasPrevious    bool    `json:"has_previous"`
+	HasMore        bool    `json:"has_more"`
+}
+
 func (store *Store) ReadEvents(namespace, id, after string) ([]Event, error) {
+	page, err := store.ReadEventPage(namespace, id, after, 0)
+	if err != nil {
+		return nil, err
+	}
+	return page.Events, nil
+}
+
+func (store *Store) ReadEventPage(namespace, id, after string, limit int) (EventPage, error) {
+	return store.QueryEventPage(namespace, id, EventQuery{
+		After: after,
+		Limit: limit,
+	})
+}
+
+func (store *Store) QueryEventPage(namespace, id string, query EventQuery) (EventPage, error) {
 	if store == nil {
-		return nil, fmt.Errorf("session: store is nil")
+		return EventPage{}, fmt.Errorf("session: store is nil")
+	}
+	if query.Limit < 0 {
+		return EventPage{}, fmt.Errorf("session: event limit cannot be negative")
+	}
+	if query.FromSeq > 0 && query.ToSeq > 0 && query.FromSeq > query.ToSeq {
+		return EventPage{}, fmt.Errorf("session: event sequence range is invalid")
 	}
 	path, err := store.SessionPath(namespace, id)
 	if err != nil {
-		return nil, err
+		return EventPage{}, err
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	events, err := readEventsFile(path)
+	if err != nil {
+		return EventPage{}, err
+	}
+
+	start, end := 0, len(events)
+	if query.After != "" {
+		index, ok := findEventIndex(events, query.After)
+		if !ok {
+			return EventPage{}, fmt.Errorf("session: event cursor %q not found", query.After)
+		}
+		start = index + 1
+	}
+	if query.Before != "" {
+		index, ok := findEventIndex(events, query.Before)
+		if !ok {
+			return EventPage{}, fmt.Errorf("session: event cursor %q not found", query.Before)
+		}
+		end = index
+	}
+	if query.FromSeq > 0 {
+		if index := firstEventAtOrAfter(events, query.FromSeq); index > start {
+			start = index
+		}
+	}
+	if query.ToSeq > 0 {
+		if index := firstEventAbove(events, query.ToSeq); index < end {
+			end = index
+		}
+	}
+	if start > end {
+		start = end
+	}
+
+	page := EventPage{Events: make([]Event, 0)}
+	takeTail := query.Tail || query.Before != "" && query.After == ""
+	selectedStart, selectedEnd := start, end
+	if takeTail && query.Limit > 0 && selectedEnd-selectedStart > query.Limit {
+		selectedStart = selectedEnd - query.Limit
+		page.HasPrevious = true
+		page.PreviousBefore = events[selectedStart].ID
+	}
+	if !takeTail && query.Limit > 0 && selectedEnd-selectedStart > query.Limit {
+		selectedEnd = selectedStart + query.Limit
+		page.HasMore = true
+		page.NextAfter = events[selectedEnd-1].ID
+	}
+	page.Events = append(page.Events, events[selectedStart:selectedEnd]...)
+	return page, nil
+}
+
+func readEventsFile(path string) ([]Event, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("session: open %q: %w", path, err)
@@ -442,28 +547,81 @@ func (store *Store) ReadEvents(namespace, id, after string) ([]Event, error) {
 		}
 		return nil, fmt.Errorf("session: empty header in %q", path)
 	}
-	foundCursor := strings.TrimSpace(after) == ""
 	events := make([]Event, 0)
+	var sequence uint64
 	for scanner.Scan() {
 		var event Event
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return nil, fmt.Errorf("session: decode event %q: %w", path, err)
 		}
-		if !foundCursor {
-			if event.ID == after {
-				foundCursor = true
-			}
-			continue
-		}
+		sequence = assignEventSeq(event.Seq, sequence)
+		event.Seq = sequence
 		events = append(events, event)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("session: read events %q: %w", path, err)
 	}
-	if !foundCursor {
-		return nil, fmt.Errorf("session: event cursor %q not found", after)
-	}
 	return events, nil
+}
+
+func findEventIndex(events []Event, id string) (int, bool) {
+	for index, event := range events {
+		if event.ID == id {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+func firstEventAtOrAfter(events []Event, sequence uint64) int {
+	for index, event := range events {
+		if event.Seq >= sequence {
+			return index
+		}
+	}
+	return len(events)
+}
+
+func firstEventAbove(events []Event, sequence uint64) int {
+	for index, event := range events {
+		if event.Seq > sequence {
+			return index
+		}
+	}
+	return len(events)
+}
+
+func (store *Store) nextEventSeqLocked(path string) (uint64, error) {
+	if store.eventSeq == nil {
+		store.eventSeq = make(map[string]uint64)
+	}
+	if sequence, ok := store.eventSeq[path]; ok {
+		return sequence, nil
+	}
+	sequence, err := readLastEventSeq(path)
+	if err != nil {
+		return 0, err
+	}
+	store.eventSeq[path] = sequence
+	return sequence, nil
+}
+
+func readLastEventSeq(path string) (uint64, error) {
+	events, err := readEventsFile(path)
+	if err != nil {
+		return 0, err
+	}
+	if len(events) == 0 {
+		return 0, nil
+	}
+	return events[len(events)-1].Seq, nil
+}
+
+func assignEventSeq(eventSeq, previous uint64) uint64 {
+	if eventSeq > previous {
+		return eventSeq
+	}
+	return previous + 1
 }
 
 func (store *Store) Read(namespace, id string) (Summary, error) {
