@@ -79,7 +79,7 @@ func runDaemonStart(args []string) error {
 		return err
 	}
 	flags, options := newDaemonLaunchFlags("daemon start", paths)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -101,7 +101,7 @@ func runDaemonRestart(args []string) error {
 	force := false
 	flags.DurationVar(&timeout, "timeout", timeout, "stop timeout")
 	flags.BoolVar(&force, "force", false, "kill an unresponsive daemon")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -126,7 +126,7 @@ func runDaemonStatus(args []string) error {
 	socket := flags.String("socket", filepath.Join(paths.Directory, "agentsd.sock"), "Unix socket path")
 	statePath := flags.String("state", paths.StateFile, "daemon state path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -165,7 +165,7 @@ func runDaemonStop(args []string) error {
 	timeout := flags.Duration("timeout", 10*time.Second, "stop timeout")
 	force := flags.Bool("force", false, "kill an unresponsive daemon")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {

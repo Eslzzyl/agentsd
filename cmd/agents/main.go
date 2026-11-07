@@ -65,7 +65,7 @@ func runSpawn(args []string) error {
 	model := flags.String("model", "", "model ID")
 	task := flags.String("task", "", "agent task")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*namespace) == "" {
@@ -92,7 +92,7 @@ func runPS(args []string) error {
 	flags.BoolVar(&allNamespaces, "A", false, "list all namespaces")
 	flags.BoolVar(&allNamespaces, "all-namespaces", false, "list all namespaces")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if !allNamespaces && strings.TrimSpace(*namespace) == "" {
@@ -115,7 +115,7 @@ func runInspect(args []string) error {
 	namespace := flags.String("n", "", "namespace (required)")
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -141,7 +141,7 @@ func runKill(args []string) error {
 	namespace := flags.String("n", "", "namespace (required)")
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -167,7 +167,7 @@ func runCompact(args []string) error {
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	wait := flags.Bool("wait", false, "wait for compaction to finish")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -204,7 +204,7 @@ func runSend(args []string) error {
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	mode := flags.String("mode", "steer", "message mode: steer or follow-up")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() < 2 {
@@ -238,7 +238,7 @@ func runInbox(args []string) error {
 	namespace := flags.String("n", "", "namespace (required)")
 	flags.StringVar(namespace, "namespace", "", "namespace (required)")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -267,7 +267,7 @@ func runActivity(args []string) error {
 	follow := flags.Bool("follow", false, "follow live events over WebSocket")
 	after := flags.String("after", "", "resume after an event ID")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -355,7 +355,7 @@ func runNamespaceCreate(args []string) error {
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -374,7 +374,7 @@ func runNamespaceDelete(args []string) error {
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
 	force := flags.Bool("force", false, "delete namespace and all sessions")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -395,7 +395,7 @@ func runNamespaceRename(args []string) error {
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 2 {
@@ -416,7 +416,7 @@ func runNamespaceList(args []string) error {
 	flags.SetOutput(os.Stderr)
 	socket := flags.String("socket", defaultSocket(), "Unix socket path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {

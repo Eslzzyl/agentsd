@@ -110,7 +110,7 @@ type modelSummary struct {
 
 func runConfigModels(args []string) error {
 	flags, path, jsonOutput := newConfigOutputFlags("config models")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() > 1 {
@@ -281,7 +281,7 @@ func runConfigValidate(args []string) error {
 
 func runConfigSet(args []string) error {
 	flags, path, jsonOutput := newConfigOutputFlags("config set")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 2 {
@@ -307,7 +307,7 @@ func runConfigSet(args []string) error {
 
 func parseConfigOutputFlags(name string, args []string) (string, bool, error) {
 	flags, path, jsonOutput := newConfigOutputFlags(name)
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return "", false, err
 	}
 	if flags.NArg() != 0 {
@@ -439,7 +439,7 @@ func runAuthSet(args []string) error {
 	authPath := flags.String("auth", paths.AuthFile, "auth JSON path")
 	field := flags.String("field", "", "credential field")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 || strings.TrimSpace(*field) == "" {
@@ -502,7 +502,7 @@ func runAuthRemove(args []string) error {
 	flags.SetOutput(os.Stderr)
 	authPath := flags.String("auth", paths.AuthFile, "auth JSON path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 1 {
@@ -540,7 +540,7 @@ func parseAuthOutputFlags(name string, args []string) (string, bool, error) {
 	flags.SetOutput(os.Stderr)
 	authPath := flags.String("auth", paths.AuthFile, "auth JSON path")
 	jsonOutput := flags.Bool("json", false, "print JSON")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return "", false, err
 	}
 	if flags.NArg() != 0 {
