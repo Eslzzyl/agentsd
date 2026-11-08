@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agentsd/internal/agent"
+	"agentsd/internal/instructions"
 	"agentsd/internal/llm"
 	"agentsd/internal/session"
 	"agentsd/internal/tools"
@@ -347,6 +348,14 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 	if err != nil {
 		return AgentSummary{}, fmt.Errorf("daemon: determine working directory: %w", err)
 	}
+	discovered, err := instructions.Discover(workspace)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	systemContent := "You are a managed coding agent. Execute the task with the available tools and return a concise final report."
+	if prompt := instructions.FormatPrompt(discovered); prompt != "" {
+		systemContent += "\n\n" + prompt
+	}
 	startedAt := time.Now().UTC()
 	id := uuid.NewString()
 	if manager.store != nil {
@@ -377,7 +386,7 @@ func (manager *Manager) SpawnInNamespace(namespace, model, task string) (AgentSu
 		cancel:  cancel,
 		control: make(chan agent.ControlRequest, 1),
 		messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: "You are a managed coding agent. Execute the task with the available tools and return a concise final report."},
+			{Role: llm.RoleSystem, Content: systemContent},
 			{Role: llm.RoleUser, Content: task},
 		},
 	}

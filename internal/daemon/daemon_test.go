@@ -230,6 +230,50 @@ func TestServerSpawnAndInspect(t *testing.T) {
 		t.Fatalf("sequence event page = %#v", sequencePage)
 	}
 }
+func TestManagerInjectsDiscoveredInstructions(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("follow repository rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "pkg", "AGENTS.md"), []byte("deep rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+
+	runner := &messageRunner{calls: make(chan []llm.Message, 1)}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return runner, "test-model", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := manager.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	if _, err := manager.SpawnInNamespace("instructions", "", "inspect task"); err != nil {
+		t.Fatal(err)
+	}
+	messages := <-runner.calls
+	if len(messages) < 2 || messages[0].Role != llm.RoleSystem {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if !strings.Contains(messages[0].Content, "<repo-rules>") ||
+		!strings.Contains(messages[0].Content, "follow repository rules") ||
+		!strings.Contains(messages[0].Content, "<dir-context>") ||
+		!strings.Contains(messages[0].Content, "- pkg/AGENTS.md") ||
+		strings.Contains(messages[0].Content, "deep rules") {
+		t.Fatalf("system prompt = %q", messages[0].Content)
+	}
+}
+
 func TestManagerPersistsAndAggregatesModelUsage(t *testing.T) {
 	store, err := session.NewStore(t.TempDir())
 	if err != nil {
