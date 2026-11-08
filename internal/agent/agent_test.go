@@ -260,6 +260,62 @@ func TestRuntimeRunsToolCallsUntilFinalMessage(t *testing.T) {
 	}
 }
 
+func TestRuntimeEmitsLLMEvents(t *testing.T) {
+	call := llm.ToolCall{
+		ID:       "call-1",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`},
+	}
+	client := &scriptedClient{responses: []llm.Response{
+		{Model: "response-model", Choices: []llm.Choice{{Message: llm.Message{
+			Role:      llm.RoleAssistant,
+			Thinking:  "tool thought",
+			ToolCalls: []llm.ToolCall{call},
+		}}}},
+		{Model: "response-model", Choices: []llm.Choice{{Message: llm.Message{
+			Role:     llm.RoleAssistant,
+			Content:  "done",
+			Thinking: "final thought",
+		}}}},
+	}}
+	registry, err := tools.NewRegistry(fixedTool{
+		name: "lookup",
+		definition: llm.Tool{Type: "function", Function: llm.FunctionDefinition{
+			Name:        "lookup",
+			Description: "Look up a value.",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}},
+		result: "ok",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []LLMEvent
+	runtime, err := NewRuntime(client, registry, RuntimeOptions{
+		LLMEventSink: func(event LLMEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Run(context.Background(), RunRequest{
+		Model:    "request-model",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "run"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Turn != 1 || events[0].Model != "response-model" || events[0].Thinking != "tool thought" || len(events[0].ToolCalls) != 1 || events[0].ToolCalls[0].ID != call.ID {
+		t.Fatalf("first event = %#v", events[0])
+	}
+	if events[1].Turn != 2 || events[1].Content != "done" || events[1].Thinking != "final thought" || len(events[1].ToolCalls) != 0 {
+		t.Fatalf("second event = %#v", events[1])
+	}
+}
+
 func TestRuntimeInjectsSteeringAfterToolBatch(t *testing.T) {
 	queue := &testMessageQueue{}
 	client := &steeringClient{queue: queue}

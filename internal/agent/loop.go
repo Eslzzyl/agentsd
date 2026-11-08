@@ -19,6 +19,7 @@ type RuntimeOptions struct {
 	// MaxTurns == 0 enables an unlimited loop. A positive value enables a turn limit.
 	MaxTurns         int
 	EventSink        tools.EventSink
+	LLMEventSink     LLMEventSink
 	ContextWindow    int
 	ContextEventSink ContextEventSink
 	Session          tools.SessionContext
@@ -30,6 +31,7 @@ type Runtime struct {
 	tools            tools.Registry
 	maxTurns         int
 	eventSink        tools.EventSink
+	llmEventSink     LLMEventSink
 	contextWindow    int
 	contextEventSink ContextEventSink
 	session          tools.SessionContext
@@ -51,6 +53,7 @@ func NewRuntime(client llm.Client, registry tools.Registry, options RuntimeOptio
 		tools:            registry,
 		maxTurns:         options.MaxTurns,
 		eventSink:        options.EventSink,
+		llmEventSink:     options.LLMEventSink,
 		contextWindow:    options.ContextWindow,
 		contextEventSink: options.ContextEventSink,
 		session:          options.Session,
@@ -65,10 +68,21 @@ type RunRequest struct {
 	ExtraBody        map[string]any
 	Session          *tools.SessionContext
 	EventSink        tools.EventSink
+	LLMEventSink     LLMEventSink
 	ContextEventSink ContextEventSink
 	UsageEventSink   UsageEventSink
 	Control          <-chan ControlRequest
 }
+
+type LLMEvent struct {
+	Turn      int
+	Model     string
+	Content   string
+	Thinking  string
+	ToolCalls []llm.ToolCall
+}
+
+type LLMEventSink func(LLMEvent)
 
 type UsageEvent struct {
 	Phase      string
@@ -173,6 +187,10 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 	if request.ContextEventSink != nil {
 		contextEventSink = request.ContextEventSink
 	}
+	llmEventSink := runtime.llmEventSink
+	if request.LLMEventSink != nil {
+		llmEventSink = request.LLMEventSink
+	}
 	tracker := newUsageTracker(request.Model, request.UsageEventSink)
 	contextState := newContextState(runtime.client, request, runtime.contextWindow)
 	contextState.eventSink = contextEventSink
@@ -214,6 +232,19 @@ func (runtime *Runtime) Run(ctx context.Context, request RunRequest) (RunResult,
 		assistant := response.Choices[0].Message
 		if assistant.Role == "" {
 			assistant.Role = llm.RoleAssistant
+		}
+		if llmEventSink != nil {
+			responseModel := response.Model
+			if responseModel == "" {
+				responseModel = modelName(request.Model)
+			}
+			llmEventSink(LLMEvent{
+				Turn:      turn,
+				Model:     responseModel,
+				Content:   assistant.Content,
+				Thinking:  assistant.Thinking,
+				ToolCalls: append([]llm.ToolCall(nil), assistant.ToolCalls...),
+			})
 		}
 		contextState.append(assistant)
 		if len(assistant.ToolCalls) == 0 {

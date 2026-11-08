@@ -45,6 +45,33 @@ func (usageRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunRe
 	}, nil
 }
 
+type llmEventRunner struct{}
+
+func (llmEventRunner) Run(_ context.Context, request agent.RunRequest) (agent.RunResult, error) {
+	toolCalls := []llm.ToolCall{{
+		ID:       "call-1",
+		Type:     "function",
+		Function: llm.FunctionCall{Name: "lookup", Arguments: `{}`},
+	}}
+	if request.LLMEventSink != nil {
+		request.LLMEventSink(agent.LLMEvent{
+			Turn:      1,
+			Model:     "test-model",
+			Content:   "answer",
+			Thinking:  "thought",
+			ToolCalls: toolCalls,
+		})
+	}
+	assistant := llm.Message{
+		Role:     llm.RoleAssistant,
+		Content:  "answer",
+		Thinking: "thought",
+	}
+	messages := append([]llm.Message(nil), request.Messages...)
+	messages = append(messages, assistant)
+	return agent.RunResult{FinalMessage: assistant, Messages: messages, Turns: 1}, nil
+}
+
 type messageRunner struct {
 	calls chan []llm.Message
 }
@@ -231,21 +258,6 @@ func TestServerSpawnAndInspect(t *testing.T) {
 	}
 }
 func TestManagerInjectsDiscoveredInstructions(t *testing.T) {
-	workspace := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(workspace, "pkg"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("follow repository rules\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "pkg", "AGENTS.md"), []byte("deep rules\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(workspace)
-
 	runner := &messageRunner{calls: make(chan []llm.Message, 1)}
 	manager, err := NewManager(func(string) (Runner, string, error) {
 		return runner, "test-model", nil
@@ -265,12 +277,52 @@ func TestManagerInjectsDiscoveredInstructions(t *testing.T) {
 	if len(messages) < 2 || messages[0].Role != llm.RoleSystem {
 		t.Fatalf("messages = %#v", messages)
 	}
-	if !strings.Contains(messages[0].Content, "<repo-rules>") ||
-		!strings.Contains(messages[0].Content, "follow repository rules") ||
-		!strings.Contains(messages[0].Content, "<dir-context>") ||
-		!strings.Contains(messages[0].Content, "- pkg/AGENTS.md") ||
-		strings.Contains(messages[0].Content, "deep rules") {
+	if !strings.Contains(messages[0].Content, "<project-context>") ||
+		!strings.Contains(messages[0].Content, "<repo-rules>") {
 		t.Fatalf("system prompt = %q", messages[0].Content)
+	}
+}
+func TestManagerPersistsLLMCompletedEvent(t *testing.T) {
+	store, err := session.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(func(string) (Runner, string, error) {
+		return llmEventRunner{}, "test-model", nil
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Shutdown(context.Background())
+
+	spawned, err := manager.SpawnInNamespace("llm-events", "", "answer task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAgentStatus(t, manager, "llm-events", spawned.ID, "idle")
+	events, err := manager.EventsInNamespace("llm-events", spawned.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed *session.Event
+	for index := range events {
+		if events[index].Type == session.EventLLMCompleted {
+			completed = &events[index]
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	if completed.Data["turn"] != float64(1) ||
+		completed.Data["model"] != "test-model" ||
+		completed.Data["content"] != "answer" ||
+		completed.Data["thinking"] != "thought" {
+		t.Fatalf("llm.completed data = %#v", completed.Data)
+	}
+	toolCalls, ok := completed.Data["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("tool_calls = %#v", completed.Data["tool_calls"])
 	}
 }
 

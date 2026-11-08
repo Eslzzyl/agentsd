@@ -299,3 +299,88 @@ func TestCompleteMergesThinkingIntoChatRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCompleteExtractsStructuredAndTaggedThinking(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		content  string
+		thinking string
+	}{
+		{
+			name:     "reasoning_content",
+			response: `{"id":"reasoning-content","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"answer","reasoning_content":"structured thought"}}]}`,
+			content:  "answer",
+			thinking: "structured thought",
+		},
+		{
+			name:     "reasoning",
+			response: `{"id":"reasoning","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"answer","reasoning":"alternate thought"}}]}`,
+			content:  "answer",
+			thinking: "alternate thought",
+		},
+		{
+			name:     "reasoning_text",
+			response: `{"id":"reasoning-text","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"answer","reasoning_text":"text thought"}}]}`,
+			content:  "answer",
+			thinking: "text thought",
+		},
+		{
+			name:     "think_tag",
+			response: `{"id":"think-tag","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"  <think> tag thought </think>  answer  "}}]}`,
+			content:  "answer",
+			thinking: "tag thought",
+		},
+		{
+			name:     "plain_text",
+			response: `{"id":"plain-text","model":"gpt-test","choices":[{"message":{"role":"assistant","content":"answer"}}]}`,
+			content:  "answer",
+			thinking: "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+			client, err := NewClient(Config{BaseURL: server.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.Complete(context.Background(), llm.Request{Model: "gpt-test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Choices) != 1 {
+				t.Fatalf("choices = %#v", result.Choices)
+			}
+			message := result.Choices[0].Message
+			if message.Content != test.content || message.Thinking != test.thinking {
+				t.Fatalf("message = %#v", message)
+			}
+		})
+	}
+}
+
+func TestChatRequestOmitsThinkingFromAssistantHistory(t *testing.T) {
+	request, err := toChatRequest(llm.Request{
+		Model: "gpt-test",
+		Messages: []llm.Message{{
+			Role:     llm.RoleAssistant,
+			Content:  "answer",
+			Thinking: "private thought",
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "reasoning_content") || strings.Contains(string(encoded), "private thought") {
+		t.Fatalf("request contains assistant thinking: %s", encoded)
+	}
+}

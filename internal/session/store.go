@@ -25,6 +25,7 @@ const (
 	EventAgentCompleted            = "agent.completed"
 	EventAgentFailed               = "agent.failed"
 	EventAgentCanceled             = "agent.canceled"
+	EventLLMCompleted              = "llm.completed"
 	EventModelUsage                = "model.usage"
 	EventSessionWaiting            = "session.waiting"
 	EventSessionWoken              = "session.woken"

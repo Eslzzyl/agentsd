@@ -51,11 +51,14 @@ type chatStreamOptions struct {
 }
 
 type chatMessage struct {
-	Role       llm.Role       `json:"role"`
-	Content    any            `json:"content,omitempty"`
-	Name       string         `json:"name,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []llm.ToolCall `json:"tool_calls,omitempty"`
+	Role             llm.Role       `json:"role"`
+	Content          any            `json:"content,omitempty"`
+	ReasoningContent any            `json:"reasoning_content,omitempty"`
+	Reasoning        any            `json:"reasoning,omitempty"`
+	ReasoningText    any            `json:"reasoning_text,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	ToolCalls        []llm.ToolCall `json:"tool_calls,omitempty"`
 }
 
 type chatContentPart struct {
@@ -126,11 +129,20 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		if !ok && choice.Message.Content != nil {
 			return llm.Response{}, fmt.Errorf("openai: response message content has type %T, want string", choice.Message.Content)
 		}
+		thinking := firstReasoningText(
+			choice.Message.ReasoningContent,
+			choice.Message.Reasoning,
+			choice.Message.ReasoningText,
+		)
+		if thinking == "" {
+			content, thinking = extractThinkBlock(content)
+		}
 		result.Choices = append(result.Choices, llm.Choice{
 			Index: choice.Index,
 			Message: llm.Message{
 				Role:       choice.Message.Role,
 				Content:    content,
+				Thinking:   thinking,
 				Name:       choice.Message.Name,
 				ToolCallID: choice.Message.ToolCallID,
 				ToolCalls:  choice.Message.ToolCalls,
@@ -143,6 +155,64 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		result.UsagePresent = true
 	}
 	return result, nil
+}
+
+func firstReasoningText(values ...any) string {
+	for _, value := range values {
+		if text := reasoningText(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func reasoningText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		var parts []string
+		for _, item := range typed {
+			if text := reasoningText(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
+	case map[string]any:
+		for _, key := range []string{"text", "content", "reasoning_content", "reasoning", "reasoning_text"} {
+			if text := reasoningText(typed[key]); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func extractThinkBlock(content string) (string, string) {
+	lower := strings.ToLower(content)
+	const openTag = "<think>"
+	const closeTag = "</think>"
+	var clean strings.Builder
+	var thinking []string
+	cursor := 0
+	for cursor < len(content) {
+		start := strings.Index(lower[cursor:], openTag)
+		if start < 0 {
+			clean.WriteString(content[cursor:])
+			break
+		}
+		start += cursor
+		end := strings.Index(lower[start+len(openTag):], closeTag)
+		if end < 0 {
+			clean.WriteString(content[cursor:])
+			break
+		}
+		end += start + len(openTag)
+		clean.WriteString(content[cursor:start])
+		thinking = append(thinking, strings.TrimSpace(content[start+len(openTag):end]))
+		cursor = end + len(closeTag)
+	}
+	return strings.TrimSpace(clean.String()), strings.TrimSpace(strings.Join(thinking, "\n"))
 }
 
 func toChatRequest(req llm.Request, stream bool) (chatRequest, error) {

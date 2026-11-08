@@ -52,6 +52,7 @@ type ToolChoice struct {
 type Message struct {
 	Role       Role
 	Content    string
+	Thinking   string
 	Images     []Image
 	Name       string
 	ToolCallID string

@@ -639,6 +639,18 @@ func (manager *Manager) runRequest(record *managedAgent, summary AgentSummary, m
 		UsageEventSink: func(event agent.UsageEvent) {
 			manager.recordUsage(record, event)
 		},
+		LLMEventSink: func(event agent.LLMEvent) {
+			data := map[string]any{
+				"turn":       event.Turn,
+				"model":      event.Model,
+				"content":    event.Content,
+				"thinking":   event.Thinking,
+				"tool_calls": event.ToolCalls,
+			}
+			if err := manager.appendEvent(record, session.NewEvent(session.EventLLMCompleted, data)); err != nil {
+				manager.setPersistenceError(record, err)
+			}
+		},
 	}
 }
 
