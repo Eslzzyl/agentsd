@@ -16,3 +16,23 @@ go install -mod=readonly ./cmd/agents ./cmd/agentsd
 ```bash
 GOBIN="$HOME/.local/bin" go install -mod=readonly ./cmd/agents ./cmd/agentsd
 ```
+
+## Skill 安装
+
+默认安装到 `~/.agents/skills/agentsd/SKILL.md`：
+
+```bash
+agents skill install
+```
+
+指定 skills 根目录：
+
+```bash
+agents skill install --path "$HOME/.agents/skills"
+```
+
+目标文件已存在时，使用 `--force` 更新：
+
+```bash
+agents skill install --force
+```
